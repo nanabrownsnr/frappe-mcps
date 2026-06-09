@@ -1,14 +1,17 @@
 :root {
-  color-scheme: light dark;
-  --bg: #0b1020;
-  --panel: rgba(15, 23, 42, 0.78);
-  --panel-border: rgba(148, 163, 184, 0.18);
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #60a5fa;
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --border: #dfe5f0;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
 }
 
 * {
@@ -19,14 +22,14 @@ body {
   margin: 0;
   font-family: Inter, system-ui, sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(96, 165, 250, 0.16), transparent 24%),
-    linear-gradient(180deg, #020617 0%, #0f172a 100%);
+    radial-gradient(circle at top left, rgba(79, 70, 229, 0.1), transparent 22%),
+    linear-gradient(180deg, #f9fbff 0%, #f3f6fb 100%);
   color: var(--text);
 }
 
 .shell {
   min-height: 100vh;
-  padding: 16px;
+  padding: 20px;
 }
 
 .header,
@@ -39,10 +42,31 @@ body {
 
 .header {
   margin-bottom: 16px;
+  padding: 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.96) 100%);
+  box-shadow: var(--shadow);
+}
+
+.brand-block {
+  min-width: 0;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo {
+  width: 76px;
+  height: auto;
+  flex: 0 0 auto;
 }
 
 .eyebrow {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
@@ -57,16 +81,24 @@ p {
 }
 
 h1 {
-  font-size: 28px;
+  font-size: 29px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
 }
 
 h2 {
   font-size: 18px;
+  line-height: 1.2;
 }
 
 .subtitle,
 .muted {
   color: var(--muted);
+}
+
+.subtitle {
+  margin-top: 10px;
+  font-size: 14px;
 }
 
 .header-actions {
@@ -76,23 +108,30 @@ h2 {
 }
 
 .button {
-  border: 1px solid var(--panel-border);
-  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid var(--border);
+  background: var(--surface);
   color: var(--text);
   padding: 10px 14px;
-  border-radius: 12px;
+  border-radius: 10px;
   cursor: pointer;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
 }
 
 .button-primary {
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  border-color: #1d4ed8;
+  background: linear-gradient(135deg, #4f46e5 0%, #312e81 100%);
+  border-color: #4338ca;
+  color: #ffffff;
 }
 
 .error {
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  background: rgba(127, 29, 29, 0.35);
-  color: #fecaca;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
   padding: 12px 14px;
   border-radius: 12px;
   margin-bottom: 16px;
@@ -120,17 +159,17 @@ h2 {
 }
 
 .overview-grid {
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .panel,
 .card,
 .overview-card,
 .empty-card {
-  border: 1px solid var(--panel-border);
-  background: var(--panel);
-  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  background: var(--surface);
   border-radius: 18px;
+  box-shadow: var(--shadow);
 }
 
 .panel {
@@ -141,6 +180,10 @@ h2 {
 .overview-card,
 .empty-card {
   padding: 16px;
+}
+
+.card {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
 }
 
 .card-label {
@@ -157,6 +200,11 @@ h2 {
   font-weight: 700;
 }
 
+.card-accent {
+  background: linear-gradient(180deg, #f5f3ff 0%, #eef2ff 100%);
+  border-color: #c7d2fe;
+}
+
 .card-accent .card-value {
   color: var(--accent);
 }
@@ -170,7 +218,8 @@ h2 {
 }
 
 .pill {
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
   border-radius: 999px;
   padding: 6px 10px;
   color: var(--muted);
@@ -191,8 +240,12 @@ th,
 td {
   text-align: left;
   padding: 12px 10px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  border-bottom: 1px solid #edf2f7;
   white-space: nowrap;
+}
+
+td {
+  color: #374151;
 }
 
 th {
@@ -205,4 +258,19 @@ th {
 .empty-state {
   color: var(--muted);
   padding: 12px 0;
+}
+
+@media (max-width: 720px) {
+  .header,
+  .panel-header {
+    flex-direction: column;
+  }
+
+  .header {
+    padding: 18px;
+  }
+
+  .brand-logo {
+    width: 64px;
+  }
 }

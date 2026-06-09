@@ -250,8 +250,8 @@ async def get_due_details(
         raise HTTPException(status_code=400, detail=f"Unable to fetch due details: {exc}") from exc
 
 
-@router.get("/loans/{loan_name}/dashboard-summary", operation_id="loan_dashboard_summary", summary="Get dashboard-style loan summary")
-async def loan_dashboard_summary(
+@router.get("/loans/{loan_name}/dashboard-summary", operation_id="get_loan_summary", summary="Get dashboard-style loan summary")
+async def get_loan_summary(
     loan_name: str,
     as_on_date: str,
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
@@ -284,8 +284,8 @@ async def loan_dashboard_summary(
             "summary": due_details,
         }
     except Exception as exc:
-        logger.exception("Loan dashboard summary failed")
-        raise HTTPException(status_code=400, detail=f"Unable to build loan dashboard summary: {exc}") from exc
+        logger.exception("Loan summary failed")
+        raise HTTPException(status_code=400, detail=f"Unable to build loan summary: {exc}") from exc
 
 
 @router.get(

@@ -1,7 +1,11 @@
+import logging
+
 from fastapi import Depends, Header, HTTPException, status
 
 from core.authentication.auth_token import verify_access_token
 from schemas.token import TokenData
+
+logger = logging.getLogger(__name__)
 
 
 async def get_bearer_token(authorization: str | None = Header(default=None)) -> str | None:
@@ -15,4 +19,10 @@ async def get_bearer_token(authorization: str | None = Header(default=None)) -> 
 async def get_current_user(token: str | None = Depends(get_bearer_token)) -> TokenData | None:
     if not token:
         return None
-    return await verify_access_token(token)
+    try:
+        return await verify_access_token(token)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            logger.warning("Bearer token rejected; continuing with anonymous fallback")
+            return None
+        raise

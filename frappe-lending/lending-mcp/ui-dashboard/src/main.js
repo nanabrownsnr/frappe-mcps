@@ -5,6 +5,7 @@ import {
   applyHostStyleVariables,
 } from "@modelcontextprotocol/ext-apps";
 import "./styles.css";
+import brandLogo from "./world-business-lenders_logo-185-100px.png";
 
 const TOOL_SUMMARY = "dashboard_loan_summary";
 
@@ -24,6 +25,7 @@ const outstandingTotalEl = document.getElementById("outstanding-total");
 const recentCountEl = document.getElementById("recent-count");
 const generatedAtEl = document.getElementById("generated-at");
 const refreshSummaryBtn = document.getElementById("refresh-summary");
+const brandLogoEl = document.getElementById("brand-logo");
 
 const mcpApp = new App({ name: "Lending Dashboard", version: "1.0.0" });
 
@@ -180,6 +182,10 @@ mcpApp.ontoolcancelled = () => {
 mcpApp.onerror = (error) => {
   renderError(error instanceof Error ? error.message : "Unexpected dashboard app error.");
 };
+
+if (brandLogoEl) {
+  brandLogoEl.src = brandLogo;
+}
 
 refreshSummaryBtn.addEventListener("click", callSummaryTool);
 
