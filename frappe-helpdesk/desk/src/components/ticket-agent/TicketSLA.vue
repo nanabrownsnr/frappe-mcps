@@ -1,0 +1,280 @@
+<template>
+  <!-- Teleport to App Header -->
+  <teleport to="#app-header">
+    <div
+      class="flex items-center mx-5 md:mr-0 text-p-sm gap-3 text-[14px] mb-[13px]"
+    >
+      <!-- Source -->
+      <div class="flex items-center gap-1">
+        <p
+          @click="
+            copyToClipboard(
+              ticket.doc.name,
+              `Ticket #${ticket.doc.name} copied to clipboard`
+            )
+          "
+          class="cursor-copy"
+        >
+          #{{ ticket.doc.name }}
+        </p>
+        <!-- Via Email -->
+        <div
+          v-if="!ticket.doc.via_customer_portal"
+          class="text-ink-gray-5 flex items-center"
+        >
+          <span class="mr-[4px]">via</span>
+          <EmailIcon class="size-4 inline-block mr-1" />
+          <span>Email</span>
+        </div>
+        <!-- Via Portal -->
+        <div v-else class="text-ink-gray-5 flex items-center">
+          <span class="mr-[4px]">via</span>
+          <GlobeIcon class="size-4 inline-block mr-1" />
+          <span>Portal</span>
+        </div>
+      </div>
+      <!-- divider -->
+      <div class="border-l border-outline-gray-2 h-[13px]" />
+      <!-- First Response -->
+      <div class="flex items-center gap-1">
+        <span>First Response</span>
+
+        <Tooltip
+          :text="dateFormat(firstResponse.date, dateTooltipFormat)"
+          :hover-delay="0.25"
+          :placement="'top'"
+        >
+          <Badge
+            :label="firstResponse.label"
+            variant="ghost"
+            class="mt-[2px]"
+            :theme="firstResponse.color"
+          />
+        </Tooltip>
+      </div>
+      <!-- divider -->
+      <div class="border-l border-outline-gray-2 h-[13px]" />
+      <!-- Resolution by -->
+      <div class="flex items-center gap-1">
+        <span>Resolution </span>
+        <Tooltip
+          :text="dateFormat(resolutionBy.date, dateTooltipFormat)"
+          :hover-delay="0.25"
+          :placement="'top'"
+        >
+          <Badge
+            v-if="resolutionBy"
+            :label="resolutionBy.label"
+            variant="ghost"
+            class="mt-[2px]"
+            :theme="
+              resolutionBy.color !== 'purple' ? resolutionBy.color : undefined
+            "
+            :class="resolutionBy.color === 'purple' && '!text-[#6B46C1] '"
+          />
+        </Tooltip>
+      </div>
+    </div>
+  </teleport>
+</template>
+
+<script setup lang="ts">
+import { useShortcut } from "@/composables/shortcuts";
+import { TicketSymbol } from "@/types";
+import {
+  copyToClipboard,
+  dateFormat,
+  dateTooltipFormat,
+  formatTime,
+} from "@/utils";
+import { Badge, dayjs, Tooltip } from "frappe-ui";
+import { computed, inject } from "vue";
+
+const ticket = inject(TicketSymbol)!;
+
+const timeFormat = {
+  day: true,
+  hour: true,
+  minute: true,
+};
+
+// Cases:
+// - if not first responded and response by is in future -> show due in
+// - if first responded before response by -> show fulfilled in
+// - if not first responded and response by is in past -> show overdue by
+// - if first responded after response by -> show failed by
+const firstResponse = computed(() => {
+  if (ticket.value?.get?.loading) return { label: "", color: "" };
+  if (
+    !ticket.value.doc.first_responded_on &&
+    dayjs().isBefore(dayjs(ticket.value.doc.response_by))
+  ) {
+    let responseBy = formatTimeShort(ticket.value.doc.response_by as string);
+    return {
+      label: `Due in ${responseBy}`,
+      color: "orange",
+    };
+  } else if (
+    dayjs(ticket.value.doc.first_responded_on).isBefore(
+      dayjs(ticket.value.doc.response_by)
+    )
+  ) {
+    let responseTime = ticket.value?.doc?.first_response_time;
+    let format =
+      responseTime <= 60
+        ? {
+            ...timeFormat,
+            second: true,
+          }
+        : timeFormat;
+    let fulfilled =
+      responseTime != null
+        ? formatTime(responseTime, format)
+        : formatTimeShort(
+            ticket.value.doc.first_responded_on as string,
+            ticket.value.doc.creation
+          );
+    return {
+      label: `Fulfilled in ${fulfilled}`,
+      color: "green",
+    };
+  } else {
+    if (!ticket.value.doc.first_responded_on) {
+      let responseBy = formatTimeShort(
+        String(new Date()),
+        ticket.value.doc.response_by as string
+      );
+      return {
+        label: `Overdue by ${responseBy}`,
+        color: "red",
+        date: ticket.value.doc.response_by,
+      };
+    }
+
+    let failed = ticket.value?.doc?.first_response_failed_by
+      ? formatTime(ticket.value.doc.first_response_failed_by, timeFormat)
+      : formatTimeShort(
+          ticket.value.doc.first_responded_on,
+          ticket.value.doc.response_by
+        );
+    return {
+      label: `Failed by ${failed}`,
+      color: "red",
+    };
+  }
+});
+
+const resolutionBy = computed(() => {
+  if (ticket.value?.get?.loading) return { label: "", color: "" };
+
+  if (
+    ticket.value.doc?.status_category === "Paused" &&
+    ticket.value.doc?.on_hold_since &&
+    dayjs(ticket.value.doc?.resolution_by).isAfter(
+      dayjs(ticket.value.doc?.on_hold_since)
+    )
+  ) {
+    return {
+      label: `On Hold`,
+      color: "blue",
+    };
+  } else if (
+    !ticket.value.doc?.resolution_date &&
+    dayjs().isAfter(dayjs(ticket.value.doc?.resolution_by))
+  ) {
+    let overdue = formatTimeShort(
+      String(new Date()),
+      ticket.value.doc?.resolution_by as string
+    );
+
+    return {
+      label: `Overdue by ${overdue}`,
+      color: "red",
+      date: ticket.value.doc?.resolution_by,
+    };
+  } else if (
+    !ticket.value.doc?.resolution_date &&
+    dayjs().isBefore(dayjs(ticket.value.doc?.resolution_by))
+  ) {
+    let resolutionBy = formatTimeShort(
+      ticket.value.doc?.resolution_by as string
+    );
+    return {
+      label: `Due in ${resolutionBy}`,
+      color: "purple",
+    };
+  } else if (
+    dayjs(ticket.value.doc?.resolution_date).isBefore(
+      dayjs(ticket.value.doc?.resolution_by)
+    )
+  ) {
+    let resolutionTime = ticket.value?.doc?.resolution_time;
+    let format =
+      resolutionTime <= 60
+        ? {
+            ...timeFormat,
+            second: true,
+          }
+        : timeFormat;
+    let fulfilled =
+      resolutionTime != null
+        ? formatTime(resolutionTime, format)
+        : formatTimeShort(
+            ticket.value.doc?.resolution_date as string,
+            ticket.value.doc?.creation
+          );
+    return {
+      label: `Fulfilled in ${fulfilled}`,
+      color: "green",
+    };
+  } else {
+    let failed = ticket.value.doc?.resolution_failed_by
+      ? formatTime(ticket.value.doc?.resolution_failed_by, timeFormat)
+      : formatTimeShort(
+          ticket.value.doc?.resolution_by,
+          ticket.value.doc?.resolution_date
+        );
+    return {
+      label: `Failed by ${failed}`,
+      color: "red",
+    };
+  }
+});
+
+function formatTimeShort(date: string, end?: string): string {
+  if (!end) {
+    end = dayjs().toString();
+  }
+  let _date = dayjs(date);
+  let duration = dayjs.duration(_date.diff(dayjs(end)));
+
+  let years = duration.years();
+  let months = duration.months();
+  let days = duration.days();
+  let hours = duration.hours();
+  let minutes = duration.minutes();
+
+  if (years > 0) {
+    return `${years}y ${months}mo`;
+  } else if (months > 0) {
+    return `${months}mo ${days}d`;
+  } else if (days > 0) {
+    return `${days}d ${hours}h`;
+  } else if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  } else {
+    return `${minutes}m`;
+  }
+}
+
+useShortcut({ meta: true, shift: true, key: "." }, () => {
+  copyToClipboard(window.location.href, `Ticket URL copied to clipboard`);
+});
+
+useShortcut({ meta: true, key: "." }, () => {
+  copyToClipboard(
+    ticket.value.doc.name,
+    `Ticket #${ticket.value.doc.name} copied to clipboard`
+  );
+});
+</script>

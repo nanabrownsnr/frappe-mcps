@@ -1,0 +1,10 @@
+ARG FRAPPE_IMAGE=frappe/erpnext:v15.58.1
+FROM ${FRAPPE_IMAGE}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+USER frappe

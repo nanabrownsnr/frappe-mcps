@@ -1,0 +1,111 @@
+@import "frappe-ui/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .prose-f {
+    @apply break-normal max-w-none prose prose-code:break-all prose-code:whitespace-pre-wrap prose-img:border prose-img:rounded-lg prose-sm;
+  }
+  .prose-f * {
+    unicode-bidi: plaintext;
+  }
+  .prose-f:not(.not-prose):not(.not-prose *) pre {
+    background-color: var(--surface-gray-2);
+    color: var(--ink-gray-9);
+  }
+}
+
+.tiptap input[placeholder="Add caption"] {
+  display: none !important;
+}
+
+html,
+body {
+  color: var(--ink-gray-9);
+}
+
+/* Modern slim scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--outline-gray-3) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--outline-gray-3);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--outline-gray-4);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+
+/* replied content css */
+.replied-content .collapse {
+    margin: 10px 0 10px 0;
+    visibility: visible;
+    cursor: pointer;
+    display: flex;
+    font-weight: 700;
+    height: 12px;
+    line-height: 0.3;
+    background: #e8eaed;
+    width: 23px;
+    justify-content: center;
+    border-radius: 5px;
+}
+.replied-content .collapse:hover {
+  background: #dadce0;
+}
+.replied-content .collapse + input {
+  display: none;
+}
+.replied-content .collapse + input + div {
+  display: none;
+}
+.replied-content .collapse + input:checked + div {
+  display: block;
+}
+
+
+/* transition fade css */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Scroll-driven edge fade for scrollable dropdown groups.*/
+@property --fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 20px;
+}
+
+@keyframes scroll-fade {
+  0% {
+    --fade-bottom: 20px;
+  }
+  100% {
+    --fade-bottom: 0px;
+  }
+}

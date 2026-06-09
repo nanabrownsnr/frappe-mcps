@@ -1,0 +1,1069 @@
+# Copyright (c) 2023, Frappe Technologies and Contributors
+# See license.txt
+
+from datetime import timedelta
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_to_date, get_datetime, getdate, now_datetime
+
+from helpdesk.helpdesk.doctype.hd_ticket.api import (
+    merge_ticket,
+    show_outside_hours_banner,
+    split_ticket,
+)
+from helpdesk.test_utils import (
+    add_comment,
+    add_holiday,
+    get_current_week_monday,
+    get_latest_ticket_communication,
+    get_priority_response_resolution_time,
+    make_status,
+    make_ticket,
+    remove_holidays,
+)
+
+ERROR_MSG_RESPONSE = "Response time differs by more than 1 second"
+ERROR_MSG_RESOLUTION = "Resolution time differs by more than 1 second"
+
+
+def get_ticket_obj():
+    return {
+        "doctype": "HD Ticket",
+        "subject": "Test Ticket",
+        "description": "Test Ticket Description",
+    }
+
+
+non_agent = "non_agent@test.com"
+agent = "agent@test.com"
+agent2 = "agent2@test.com"
+
+
+class TestHDTicket(FrappeTestCase):
+    def setUp(self):
+        frappe.db.delete("HD Ticket")
+        frappe.get_doc(
+            {"doctype": "User", "first_name": "Non Agent", "email": non_agent}
+        ).insert(ignore_if_duplicate=True)
+
+        frappe.get_doc(
+            {"doctype": "User", "first_name": "Agent", "email": agent}
+        ).insert(ignore_if_duplicate=True)
+
+        frappe.get_doc(
+            {"doctype": "HD Agent", "user": agent, "agent_name": "agent"}
+        ).insert(ignore_if_duplicate=True)
+
+        frappe.get_doc(
+            {"doctype": "User", "first_name": "Agent2", "email": agent2}
+        ).insert(ignore_if_duplicate=True)
+        frappe.get_doc(
+            {"doctype": "HD Agent", "user": agent2, "agent_name": "agent2"}
+        ).insert(ignore_if_duplicate=True)
+        frappe.set_value("HD Settings", "HD Settings", "enable_outside_hours_banner", 1)
+
+    def test_ticket_creation(self):
+        ticket = frappe.get_doc(get_ticket_obj())
+        ticket.insert()
+        self.assertTrue(ticket.name)
+
+    def test_agent_flow(self):
+        ticket = frappe.get_doc(get_ticket_obj())
+        ticket.insert()
+
+        ticket.assign_agent(agent)
+        ticket.assign_agent(agent2)
+        notification = frappe.get_all(
+            "HD Notification",
+            filters={
+                "reference_ticket": ticket.name,
+                "notification_type": "Assignment",
+                "user_to": ["in", [agent, agent2]],
+                "user_from": "Administrator",
+            },
+        )
+        self.assertEqual(len(notification), 2)
+        ticket = frappe.get_doc("HD Ticket", ticket.name)
+        ticket.status = "Replied"
+        ticket.save()
+
+        ticket.status = "Open"
+        ticket.save()
+        self.assertTrue(ticket)
+
+        notification = frappe.get_all(
+            "HD Notification",
+            filters={
+                "reference_ticket": ticket.name,
+                "notification_type": "Reaction",
+                "user_to": ["in", [agent, agent2]],
+                "user_from": "Administrator",
+            },
+        )
+        self.assertEqual(len(notification), 2)
+
+        ticket.status = "Resolved"
+        ticket.save()
+        self.assertTrue(ticket)
+
+        ticket.status = "Closed"
+        ticket.save()
+        self.assertTrue(ticket)
+
+    def test_non_agent_flow(self):
+        ticket = frappe.get_doc(get_ticket_obj())
+        ticket.insert()
+
+        ticket.assign_agent(non_agent)
+        notification = frappe.get_all(
+            "HD Notification",
+            filters={
+                "reference_ticket": ticket.name,
+                "notification_type": "Assignment",
+                "user_to": non_agent,
+                "user_from": "Administrator",
+            },
+        )
+        self.assertEqual(len(notification), 1)
+
+        ticket = frappe.get_doc("HD Ticket", ticket.name)
+        ticket.status = "Replied"
+        ticket.save()
+        self.assertTrue(ticket)
+
+        ticket.status = "Open"
+        ticket.save()
+        self.assertTrue(ticket)
+
+        ticket.status = "Resolved"
+        ticket.save()
+        self.assertTrue(ticket)
+
+        ticket.status = "Closed"
+        ticket.save()
+        self.assertTrue(ticket)
+
+    # Working hours default to 10:00 to 18:00 from Monday to Friday
+    # And priorities default to
+    # Low: 24 hour response, 72 hours resolution
+    # Medium: 8 hour response, 24 hours resolution
+    # High: 1 hour response, 4 hours resolution
+    # Urgent: 30 minutes response, 2 hours resolution
+
+    def test_response_resolution_working_day(self):
+        ticket_creation = get_current_week_monday()
+        ticket = make_ticket(
+            priority="High", service_level_agreement_creation=ticket_creation
+        )
+
+        expected_response_by = add_to_date(ticket_creation, hours=1)  # 1 hour later
+        expected_resolution_by = add_to_date(ticket_creation, hours=4)  # 4 hours later
+
+        self.assertAlmostEqual(
+            expected_response_by.timestamp(),
+            ticket.response_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESPONSE,
+        )
+        self.assertAlmostEqual(
+            expected_resolution_by.timestamp(),
+            ticket.resolution_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESOLUTION,
+        )
+
+    def test_response_resolution_before_working_hours(self):
+        day_start_time_hours = 10
+        hours_before_working = 2
+        ticket_creation = getdate(get_current_week_monday())
+        ticket_creation = add_to_date(
+            ticket_creation, hours=day_start_time_hours - hours_before_working
+        )  # Monday 8:00 AM
+
+        ticket = make_ticket(
+            priority="High", service_level_agreement_creation=ticket_creation
+        )
+
+        # high priority has 1 hour response time and 4 hours resolution time
+        first_response, resolution = get_priority_response_resolution_time(
+            "Default", "High", ticket_creation, add_to_time=False
+        )
+        # start time = 10:00 AM
+        # response time = 11:00 AM
+        # resolution time = 14:00 PM
+        first_response_hours = day_start_time_hours + (
+            first_response / 3600
+        )  # 1 hour later
+        resolution_hours = day_start_time_hours + (resolution / 3600)  # 4 hours later
+        expected_first_response = add_to_date(
+            getdate(ticket_creation), hours=first_response_hours
+        )  # 11:00 AM
+        expected_resolution = add_to_date(
+            getdate(ticket_creation), hours=resolution_hours
+        )  # 4 hours from 10:00 AM
+
+        self.assertAlmostEqual(
+            expected_first_response.timestamp(),
+            ticket.response_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESPONSE,
+        )
+        self.assertAlmostEqual(
+            expected_resolution.timestamp(),
+            ticket.resolution_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESOLUTION,
+        )
+
+    def test_response_resolution_after_working_hours(self):
+        ticket_creation = get_current_week_monday(hours=20)  # Monday 8:00 PM
+        ticket = make_ticket(
+            priority="Urgent", service_level_agreement_creation=ticket_creation
+        )  # 30 minutes response time, 2 hours resolution time
+        expected_response_by = add_to_date(
+            getdate(ticket_creation), days=1, hours=10, minutes=30
+        )  # Tuesday 10:30 AM
+        expected_resolution_by = add_to_date(
+            getdate(ticket_creation), days=1, hours=12
+        )  # Tuesday 12:00 PM
+
+        self.assertAlmostEqual(
+            expected_response_by.timestamp(),
+            ticket.response_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESPONSE,
+        )
+        self.assertAlmostEqual(
+            expected_resolution_by.timestamp(),
+            ticket.resolution_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESOLUTION,
+        )
+
+    def test_response_resolution_non_working_day(self):
+        ticket_creation = add_to_date(
+            get_current_week_monday(hours=0), days=5, hours=15
+        )  # Saturday 3:00 PM
+        ticket = make_ticket(
+            priority="Low", service_level_agreement_creation=ticket_creation
+        )
+        response_time, resolution_time = get_priority_response_resolution_time(
+            ticket.sla, ticket.priority, add_to_time=False
+        )
+
+        expected_response_by = add_to_date(
+            getdate(ticket_creation), days=4, hours=18
+        )  # Next week wednesday at 6:00 PM
+        expected_resolution_by = add_to_date(
+            getdate(ticket_creation), days=12, hours=18
+        )  # 12 Days after ticket creation at 6:00 PM
+
+        self.assertAlmostEqual(
+            expected_response_by.timestamp(),
+            ticket.response_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESPONSE,
+        )
+        self.assertAlmostEqual(
+            expected_resolution_by.timestamp(),
+            ticket.resolution_by.timestamp(),
+            delta=1,
+            msg=ERROR_MSG_RESOLUTION,
+        )
+
+    def test_response_resolution_friday_in_working_hours(self):
+        mock_date = add_to_date(
+            get_current_week_monday(hours=0), days=4, hours=17
+        )  # Friday 5:00 PM
+        ticket = make_ticket(
+            priority="Urgent", service_level_agreement_creation=mock_date
+        )
+        expected_response_by = add_to_date(mock_date, minutes=30)  # 30 minutes later
+        expected_resolution_by = add_to_date(
+            getdate(mock_date), days=3, hours=11
+        )  # Monday 11:00 AM, 1 hour from friday and 1 hour from monday
+
+        self.assertEqual(expected_response_by, ticket.response_by)
+        self.assertEqual(expected_resolution_by, ticket.resolution_by)
+
+    def test_response_resolution_friday_after_working_hours(self):
+        mock_date = add_to_date(
+            get_current_week_monday(hours=0), days=4, hours=19
+        )  # Friday 7:00 PM
+
+        ticket = make_ticket(
+            priority="High", service_level_agreement_creation=mock_date
+        )
+
+        expected_response_by = add_to_date(
+            getdate(mock_date), days=3, hours=11
+        )  # Monday 11:00 AM
+        expected_resolution_by = add_to_date(
+            getdate(mock_date), days=3, hours=14
+        )  # Monday 2:00 PM
+
+        self.assertEqual(expected_response_by, ticket.response_by)
+        self.assertEqual(expected_resolution_by, ticket.resolution_by)
+
+    def test_response_resolution_holiday(self):
+        mock_date = add_to_date(
+            get_current_week_monday(hours=0), days=3, hours=15
+        )  # Thursday 3:00 PM
+        holiday_date = getdate(mock_date)
+
+        add_holiday(holiday_date, "Test Holiday")  # Thursday is set as a holiday
+        add_holiday(
+            add_to_date(holiday_date, days=1), "Test Holiday"
+        )  # Friday is set as a holiday
+        # Saturday and Sunday are already non-working days
+
+        ticket = make_ticket(
+            priority="Urgent", service_level_agreement_creation=mock_date
+        )
+
+        expected_response_by = add_to_date(
+            getdate(mock_date), days=4, hours=10, minutes=30
+        )  # Next week Monday at 10:30 AM
+        expected_resolution_by = add_to_date(getdate(mock_date), days=4, hours=12)
+
+        self.assertEqual(expected_response_by, ticket.response_by)
+        self.assertEqual(expected_resolution_by, ticket.resolution_by)
+
+    def test_response_resolution_with_holdtime(self):
+        mock_date = add_to_date(get_current_week_monday(hours=0), days=3, hours=15)
+
+        ticket = make_ticket(
+            priority="Urgent", service_level_agreement_creation=mock_date
+        )
+
+        expected_response_by = add_to_date(mock_date, minutes=30)  # 30 minutes later
+        expected_resolution_by = add_to_date(mock_date, hours=2)  # 2 hours later
+
+        self.assertEqual(expected_response_by, ticket.response_by)
+        self.assertEqual(expected_resolution_by, ticket.resolution_by)
+
+        ticket.reload()
+        ticket.status = "Replied"
+        ticket.save()
+
+        ticket.reload()
+        ticket.total_hold_time = 3600  # 1 hour hold time
+        ticket.save()
+
+        ticket = ticket.reload()
+        new_expected_resolution_by = add_to_date(expected_resolution_by, hours=1)
+
+        self.assertEqual(new_expected_resolution_by, ticket.resolution_by)
+
+        ticket.total_hold_time = 3601  # 1 hour + 1 second, hold time
+        ticket.save()
+        ticket = ticket.reload()
+
+        new_expected_resolution_by = add_to_date(
+            getdate(expected_resolution_by), days=1, hours=10, seconds=1
+        )
+        self.assertEqual(new_expected_resolution_by, ticket.resolution_by)
+
+    def test_sla_status(self):
+        ticket = make_ticket(
+            priority="Urgent",
+        )
+        self.assertEqual(ticket.agreement_status, "First Response Due")
+
+        ticket.reload()
+        ticket.status = "Replied"
+        ticket.save()
+        self.assertEqual(ticket.agreement_status, "Paused")
+        # First response fulfilled
+        self.assertTrue(ticket.first_responded_on < ticket.response_by)
+
+        ticket.reload()
+        ticket.status = "Open"
+        ticket.save()
+        self.assertEqual(ticket.agreement_status, "Resolution Due")
+
+        ticket.reload()
+        ticket.status = "Resolved"
+        ticket.save()
+        self.assertEqual(ticket.agreement_status, "Fulfilled")
+
+    def test_hold_time_resolution_time(self):
+        # Keep the ticket in paused state for 30 minutes to test hold time, resolution_by should increase by 30 minutes
+        ticket = None
+        date = get_current_week_monday(hours=12)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="High")
+            self.assertEqual(ticket.agreement_status, "First Response Due")
+            self.assertEqual(ticket.response_by, add_to_date(date, hours=1))
+            self.assertEqual(ticket.resolution_by, add_to_date(date, hours=4))
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(date, minutes=30)):
+            ticket.status = "Replied"
+            ticket.save()
+            self.assertEqual(ticket.first_responded_on, get_datetime())
+            self.assertEqual(ticket.agreement_status, "Paused")
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(date, hours=1)):
+            ticket.status = "Open"
+            ticket.save()
+            ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Resolution Due")
+            self.assertEqual(
+                ticket.resolution_by, add_to_date(date, hours=4, minutes=30)
+            )
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(date, hours=1, minutes=30)):
+            ticket.status = "Resolved"
+            ticket.save()
+            ticket = ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Fulfilled")
+            # Resolution time should be 1 hour more than the original resolution time
+            self.assertEqual(ticket.resolution_time, 60 * 60)
+
+    def test_hold_time_resolution_time_with_holiday(self):
+        # create friday as holiday
+        # create ticket on thursday 5:30 PM with high priority
+        # change status to replied on 5:50 PM
+        # change status to open on 12:30 PM on Monday
+        # total_hold_time should be 1 hour 40 minutes
+        # change status to resolved on 13:00 PM on Monday
+        # resolution time should be 3 hours 30 minutes
+        add_holiday(
+            getdate(add_to_date(get_current_week_monday(), days=4)),
+            "Test Holiday",
+        )
+        ticket = None
+        date = add_to_date(
+            get_current_week_monday(hours=0), days=3, hours=17, minutes=30
+        )
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="High")
+            ticket.reload()
+
+        with self.freeze_time(add_to_date(date, minutes=20)):
+            ticket.status = "Replied"
+            ticket.save()
+            self.assertEqual(ticket.first_responded_on, get_datetime())
+            self.assertEqual(ticket.agreement_status, "Paused")
+
+        ticket.reload()
+        next_monday_date = add_to_date(
+            get_current_week_monday(hours=0), days=7, hours=12, minutes=30
+        )
+        with self.freeze_time(next_monday_date):
+            ticket.status = "Open"
+            ticket.save()
+            ticket = ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Resolution Due")
+            # total hold time should be 10 minutes from 5:50 PM to 6:00 PM on Thursday
+            #  + 10 to 12:30 pm on monday
+            expected_hold_time = 10 * 60 + 150 * 60
+            self.assertEqual(ticket.total_hold_time, expected_hold_time)
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(next_monday_date, minutes=30)):
+            ticket.status = "Resolved"
+            ticket.save()
+            ticket = ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Fulfilled")
+            # Resolution time should be 1 hour more than the original resolution time
+            expected_total_time_to_resolve = (60 * 60 * 3) + 30 * 60
+            expected_resolution_time = (
+                expected_total_time_to_resolve - ticket.total_hold_time
+            )
+            self.assertEqual(
+                ticket.resolution_time, expected_resolution_time
+            )  # 3 hours 30 minutes
+
+    def test_default_status(self):
+        # create a new status
+        # go to hd settings and set it as default
+        # create a new ticket, it should have the new status as default
+        ticket = make_ticket()
+        self.assertNotEqual(ticket.status, "New")
+
+        status = make_status(name="New")
+        frappe.db.set_single_value("HD Settings", "default_ticket_status", status.name)
+        ticket2 = make_ticket()
+        self.assertEqual(ticket2.status, status.name)
+
+        ticket2.reload()
+        ticket2.status = "Replied"
+        ticket2.save()
+        self.assertEqual(ticket2.status, "Replied")
+
+        ticket2.reload()
+
+        ticket2.create_communication_via_contact("Testing reply")
+        ticket2.reload()
+        # reopen the ticket
+
+        # status remains default one unless agent replies
+        self.assertEqual(ticket2.status, "New")
+
+    def test_hold_time_resolution_time_with_holiday_with_custom_status(self):
+        """
+        same test case as test_hold_time_resolution_time_with_holiday
+        but with custom statuses
+
+        """
+        add_holiday(
+            getdate(add_to_date(get_current_week_monday(), days=4)),
+            "Test Holiday",
+        )
+        paused_status = make_status(name="On Hold", category="Paused")
+        resolved_status = make_status(name="Completed", category="Resolved")
+        ticket = None
+        date = add_to_date(
+            get_current_week_monday(hours=0), days=3, hours=17, minutes=30
+        )
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="High")
+            ticket.reload()
+
+        with self.freeze_time(add_to_date(date, minutes=20)):
+            ticket.status = paused_status.name
+            ticket.save()
+            self.assertEqual(ticket.first_responded_on, get_datetime())
+            self.assertEqual(ticket.agreement_status, "Paused")
+
+        ticket.reload()
+
+        next_monday_date = add_to_date(
+            get_current_week_monday(hours=0), days=7, hours=12, minutes=30
+        )
+        with self.freeze_time(next_monday_date):
+            ticket.status = "Open"
+            ticket.save()
+            ticket = ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Resolution Due")
+            # total hold time should be 10 minutes from 5:50 PM to 6:00 PM on Thursday
+            #  + 10 to 12:30 pm on monday
+            expected_hold_time = 10 * 60 + 150 * 60
+            self.assertEqual(ticket.total_hold_time, expected_hold_time)
+
+        ticket.reload()
+
+        with self.freeze_time(add_to_date(next_monday_date, minutes=30)):
+            ticket.status = resolved_status.name
+            ticket.save()
+            ticket = ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Fulfilled")
+            # Resolution time should be 1 hour more than the original resolution time
+            expected_total_time_to_resolve = (60 * 60 * 3) + 30 * 60
+            expected_resolution_time = (
+                expected_total_time_to_resolve - ticket.total_hold_time
+            )
+            self.assertEqual(ticket.resolution_time, expected_resolution_time)
+
+    def test_resolve_closed_resolution_time(self):
+        """
+        Ticket resolution time should not change if ticket goes from resolved to closed
+        """
+        date = get_current_week_monday(hours=12)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="High")
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(date, minutes=30)):
+            ticket.status = "Resolved"
+            ticket.save()
+            self.assertEqual(ticket.resolution_time, 30 * 60)
+
+        ticket.reload()
+        with self.freeze_time(add_to_date(date, days=1)):
+            ticket.status = "Closed"
+            ticket.save()
+            self.assertEqual(ticket.resolution_time, 30 * 60)
+
+    def test_ticket_merge(self):
+        ticket1 = make_ticket(description="Test Desc 1")
+        add_comment(ticket1.name, "First comment on ticket 1")
+
+        ticket2 = make_ticket(description="Test Desc 2")
+        add_comment(ticket2.name, "First comment on ticket 2")
+
+        merge_ticket(source=ticket1.name, target=ticket2.name)
+        ticket1.reload()
+        self.assertEqual(ticket1.status, "Closed")
+        self.assertTrue(ticket1.is_merged)
+        self.assertEqual(ticket1.merged_with, ticket2.name)
+
+        ticket2.reload()
+        comments = frappe.get_all(
+            "HD Ticket Comment",
+            filters={
+                "reference_ticket": ticket2.name,
+            },
+            fields=["content", "name"],
+        )
+        self.assertEqual(
+            len(comments), 3
+        )  # 2 original comments + 1 merge comment (Ticket 1 merged into Ticket 2)
+
+    def test_ticket_split(self):
+        ticket1 = make_ticket(description="Test Desc for split")
+
+        ticket1.reply_via_agent(message="Test reply to split")
+        communcation_name = frappe.get_all(
+            "Communication",
+            filters={
+                "reference_doctype": "HD Ticket",
+                "reference_name": ticket1.name,
+            },
+            pluck="name",
+        )[0]
+        self.assertTrue(communcation_name)
+
+        ticket2: str = split_ticket(
+            subject="Split Ticket", communication_id=communcation_name
+        )
+        ticket2_doc = frappe.get_doc("HD Ticket", ticket2)
+        self.assertTrue(ticket2_doc)
+        self.assertEqual(ticket2_doc.subject, "Split Ticket")
+        self.assertTrue(
+            frappe.get_value("Communication", communcation_name, "reference_name"),
+            ticket2_doc.name,
+        )
+
+    def test_ticket_inside_working_hours(self):
+        inside_working_hour = get_current_week_monday(hours=14)
+        with self.freeze_time(inside_working_hour):
+            ticket = make_ticket(priority="High")
+            self.assertFalse(ticket.raised_outside_working_hours)
+
+    def test_ticket_inside_working_hours_currently_outside(self):
+        inside_working_hour = get_current_week_monday(hours=14)
+        with self.freeze_time(inside_working_hour):
+            # Ticket created inside working hours
+            ticket = make_ticket(priority="High")
+            self.assertFalse(ticket.raised_outside_working_hours)
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertFalse(banner_shown)
+
+        ticket.reload()
+        with self.freeze_time(get_current_week_monday(hours=20)):
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertFalse(banner_shown)
+
+    def test_ticket_outside_working_hours(self):
+        outside_working_hour = get_current_week_monday(hours=8)
+        with self.freeze_time(outside_working_hour):
+            ticket = make_ticket(priority="High")
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertTrue(ticket.raised_outside_working_hours)
+            self.assertTrue(banner_shown)
+
+    def test_ticket_outside_working_hours_currently_in_working_hour(self):
+        outside_working_hours = get_current_week_monday(hours=8)
+        with self.freeze_time(outside_working_hours):
+            ticket = make_ticket(priority="High")
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertTrue(ticket.raised_outside_working_hours)
+            self.assertTrue(banner_shown)
+
+        ticket.reload()
+        newtime = add_to_date(get_current_week_monday(hours=14), days=1)
+        with self.freeze_time(newtime):
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertFalse(banner_shown)
+            self.assertTrue(ticket.raised_outside_working_hours)
+
+    def test_ticket_outside_working_hours_weekend(self):
+        weekend = add_to_date(get_current_week_monday(), days=5, hours=14)
+        with self.freeze_time(weekend):
+            ticket = make_ticket(priority="High")
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertTrue(ticket.raised_outside_working_hours)
+            self.assertTrue(banner_shown)
+
+    def test_ticket_outside_working_hours_agent_replied(self):
+        outside_working_hour = get_current_week_monday(hours=8)
+        with self.freeze_time(outside_working_hour):
+            ticket = make_ticket(priority="High")
+            ticket.reply_via_agent(message="Test reply to split")
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertTrue(ticket.raised_outside_working_hours)
+            self.assertFalse(banner_shown)
+
+    def test_if_banner_not_shown_after_next_working_day(self):
+        outside_working_hour_day_1 = get_current_week_monday(hours=20)
+        with self.freeze_time(outside_working_hour_day_1):
+            ticket = make_ticket(priority="low")
+
+        ticket.reload()
+        next_working_day = add_to_date(get_current_week_monday(hours=20), days=1)
+        with self.freeze_time(next_working_day):
+            banner_shown = show_outside_hours_banner(ticket.name)["show"]
+            self.assertFalse(banner_shown)
+
+    def test_reply_via_agent_with_only_cc(self):
+        """
+        reply_via_agent should succeed when only cc is provided and to is empty/None
+        """
+        ticket = make_ticket()
+        cc_recipient = "cc_only@test.com"
+        ticket.reply_via_agent(message="Test reply", cc=cc_recipient)
+        communication_doc = get_latest_ticket_communication(ticket.name)
+        if hasattr(communication_doc, "to") and communication_doc.to:
+            self.assertFalse(communication_doc.to)
+        if hasattr(communication_doc, "cc") and communication_doc.cc:
+            self.assertEqual(communication_doc.cc, cc_recipient)
+        if hasattr(communication_doc, "bcc") and communication_doc.bcc:
+            self.assertFalse(communication_doc.bcc)
+
+    def test_reply_via_agent_with_only_bcc(self):
+        """
+        reply_via_agent should succeed when only bcc is provided and to is empty/None
+        """
+        ticket = make_ticket()
+        bcc_recipient = "bcc_only@test.com"
+        ticket.reply_via_agent(message="Test reply", bcc=bcc_recipient)
+        communication_doc = get_latest_ticket_communication(ticket.name)
+        if hasattr(communication_doc, "to") and communication_doc.to:
+            self.assertFalse(communication_doc.to)
+        if hasattr(communication_doc, "cc") and communication_doc.cc:
+            self.assertFalse(communication_doc.cc)
+        if hasattr(communication_doc, "bcc") and communication_doc.bcc:
+            self.assertEqual(communication_doc.bcc, bcc_recipient)
+
+    def test_reply_via_agent_with_cc_and_bcc_no_to(self):
+        """
+        reply_via_agent should succeed when both cc and bcc are provided but to is empty
+        """
+        ticket = make_ticket()
+        cc_recipient = "cc_combo@test.com"
+        bcc_recipient = "bcc_combo@test.com"
+        ticket.reply_via_agent(message="Test reply", cc=cc_recipient, bcc=bcc_recipient)
+        comm = get_latest_ticket_communication(ticket.name)
+        communication_doc = get_latest_ticket_communication(ticket.name)
+        if hasattr(communication_doc, "to") and communication_doc.to:
+            self.assertFalse(communication_doc.to)
+        if hasattr(communication_doc, "cc") and communication_doc.cc:
+            self.assertEqual(communication_doc.cc, cc_recipient)
+        if hasattr(communication_doc, "bcc") and communication_doc.bcc:
+            self.assertEqual(communication_doc.bcc, bcc_recipient)
+
+    def test_security_unauthorized_reply_via_agent(self):
+        ticket = make_ticket()
+        frappe.set_user(non_agent)
+
+        with self.assertRaises(frappe.PermissionError):
+            ticket.reply_via_agent(message="Test unauthorized reply")
+
+        frappe.set_user("Administrator")
+
+    def test_security_unauthorized_assign_agent(self):
+        ticket = make_ticket()
+        frappe.set_user(non_agent)
+
+        with self.assertRaises(frappe.PermissionError):
+            ticket.assign_agent(agent)
+
+        frappe.set_user("Administrator")
+
+    def test_security_info_disclosure_similar_tickets(self):
+        from helpdesk.helpdesk.doctype.hd_ticket.api import get_recent_similar_tickets
+
+        ticket = make_ticket()
+
+        frappe.set_user(non_agent)
+
+        with self.assertRaises(frappe.PermissionError):
+            get_recent_similar_tickets(ticket.name)
+
+        frappe.set_user("Administrator")
+
+    def test_ticket_priority(self):
+        # if priority is set, ticket will have the applied priority
+        ticket1 = make_ticket(priority="High")
+        self.assertEqual(ticket1.priority, "High")
+
+        # if ticket type is set, and ticket type has a priority, the ticket's priority will be the same as type's priority
+        ticket_type = frappe.get_doc("HD Ticket Type", "Bug")
+        ticket_type.priority = "High"
+        ticket_type.save()
+        ticket2 = make_ticket(ticket_type="Bug")
+        self.assertEqual(ticket2.priority, "High")
+
+        # if ticket type and priority is set, applied priority is given preference
+        ticket3 = make_ticket(priority="Low", ticket_type="Bug")
+        self.assertEqual(ticket3.priority, "Low")
+
+        # if ticket type is set, and ticket type does not has a priority, the ticket's priority will be the same as applied sla's default priority
+        sla_doc = frappe.get_doc("HD Service Level Agreement", "Default")
+        for p in sla_doc.priorities:
+            if p.priority == "Low":
+                p.default_priority = 1
+            else:
+                p.default_priority = 0
+        sla_doc.save()
+
+        ticket4 = make_ticket(ticket_type="Incident")  # type with no priority
+        self.assertEqual(
+            ticket4.priority, "Low"
+        )  # applied SLA's default priority is assigned
+
+        # ticket created without any type or priority should pick up priority from applied SLA's default
+        ticket5 = make_ticket()
+        self.assertEqual(ticket5.priority, "Low")
+
+    # Test cases for agreement_status field which is computed based on response_by, resolution_by, first_responded_on, on_hold_since and resolution_date fields
+    # In total there are 7 scenarios for agreement_status which are covered in the below test cases:
+    def test_agreement_status_first_response_failed(self):
+        # Case 1: No reply before response_by (T+30min) → Failed
+        # At T+1h, response_by (T+30min) < now (T+1h) → first response failed
+        # resolution_by (T+2h) > now (T+1h) → resolution not yet failed
+        # is_failed = True → "Failed"
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, hours=1)):
+            ticket.reload()
+            ticket.save()
+            self.assertEqual(ticket.agreement_status, "Failed")
+
+    def test_agreement_status_resolution_failed(self):
+        # Case 2: First response in time, resolution misses deadline → Failed
+        #
+        # Timeline (Urgent: response_by=T+30min, resolution_by=T+2h):
+        #   T+10min  → Replied (Paused): first_responded_on set, on_hold_since=T+10min
+        #   T+20min  → Open: off hold, hold_time=10min(600s),
+        #              new resolution_by = T + 2h + 10min = T+2h10min
+        #   T+2h15min → save: resolution_by (T+2h10min) < now (T+2h15min) → Failed
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=10)):
+            ticket.reload()
+            ticket.status = "Replied"
+            ticket.save()
+
+        with self.freeze_time(add_to_date(date, minutes=20)):
+            ticket.reload()
+            ticket.status = "Open"
+            ticket.save()
+            self.assertEqual(ticket.agreement_status, "Resolution Due")
+
+        # Re-save past the extended resolution_by (T+2h10min) without changing status
+        with self.freeze_time(add_to_date(date, hours=2, minutes=15)):
+            ticket.reload()
+            ticket.save()
+            self.assertEqual(ticket.agreement_status, "Failed")
+
+    def test_agreement_status_both_failed(self):
+        # Case 3: No reply given, past both response_by (T+30min) and resolution_by (T+2h)
+        # At T+3h: response_by < now AND resolution_by < now → is_failed = True → "Failed"
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, hours=3)):
+            ticket.reload()
+            ticket.save()
+            self.assertEqual(ticket.agreement_status, "Failed")
+
+    def test_agreement_status_resolution_due_on_hold(self):
+        # Case 4: First response given, resolution due, ticket on hold → Paused
+        # "Replied" is a Paused-category status — sets first_responded_on AND on_hold_since
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=10)):
+            ticket.reload()
+            ticket.status = "Replied"
+            ticket.save()
+            self.assertTrue(ticket.first_responded_on)
+            self.assertTrue(ticket.on_hold_since)
+            self.assertIsNone(ticket.resolution_date)
+            self.assertEqual(ticket.agreement_status, "Paused")
+
+    def test_agreement_status_first_response_due(self):
+        # Case 5: Fresh ticket — no reply, not on hold → First Response Due
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+            self.assertIsNone(ticket.first_responded_on)
+            self.assertIsNone(ticket.on_hold_since)
+            self.assertEqual(ticket.agreement_status, "First Response Due")
+
+    def test_agreement_status_resolution_due(self):
+        # Case 6: First response given, came off hold, resolution still pending → Resolution Due
+        #
+        # Timeline:
+        #   T+10min → Replied (Paused): first_responded_on set, on_hold_since set
+        #   T+20min → Open: off hold, hold_time=10min, resolution_by extended to T+2h10min
+        #   At T+20min: first_responded_on set, on_hold_since=None,
+        #               resolution_date=None, now < resolution_by → Resolution Due
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=10)):
+            ticket.reload()
+            ticket.status = "Replied"
+            ticket.save()
+
+        with self.freeze_time(add_to_date(date, minutes=20)):
+            ticket.reload()
+            ticket.status = "Open"
+            ticket.save()
+            self.assertTrue(ticket.first_responded_on)
+            self.assertIsNone(ticket.on_hold_since)
+            self.assertIsNone(ticket.resolution_date)
+            self.assertEqual(ticket.agreement_status, "Resolution Due")
+
+    def test_agreement_status_fulfilled(self):
+        # Case 7: Resolved within both deadlines → Fulfilled
+        # Resolved at T+10min: first_responded_on=T+10min < response_by=T+30min ✓
+        # resolution_date=T+10min < resolution_by=T+2h ✓ → Fulfilled
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=10)):
+            ticket.reload()
+            ticket.status = "Resolved"
+            ticket.save()
+            self.assertEqual(ticket.agreement_status, "Fulfilled")
+
+    def test_failed_by_response(self):
+        # Urgent priority: response_by = T+30min
+        # Agent replies at T+39min → 9 minutes late in business hours
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=39)):
+            frappe.set_user(agent)
+            ticket.reply_via_agent(message="Test reply after response by")
+            ticket.reload()
+
+            ticket.status = "Replied"
+            ticket.save()
+            ticket.reload()
+
+            self.assertEqual(ticket.agreement_status, "Failed")
+
+            # first_response_failed_by should be 9 minutes (in business hours seconds)
+            self.assertEqual(ticket.first_response_failed_by, 9 * 60)
+
+        # now check failed by just 2 minutes after the end time
+        # what is the end time of monday?
+        # end_time = 6 PM on Monday
+        date2 = get_current_week_monday(hours=17)
+        with self.freeze_time(add_to_date(date2, minutes=55)):
+            ticket2 = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date2, hours=1, minutes=5)):
+            frappe.set_user(agent)
+            ticket2.reply_via_agent(message="Test reply after response by")
+            ticket2.reload()
+
+            ticket2.status = "Replied"
+            ticket2.save()
+            ticket2.reload()
+
+            self.assertIsNone(ticket2.first_response_failed_by)
+
+    def test_resolution_failed_by(self):
+        # Urgent priority: resolution_by = T+2h
+        # Ticket resolved at T+2h15min → 15 minutes late in business hours
+        date = get_current_week_monday(hours=10)
+        with self.freeze_time(date):
+            ticket = make_ticket(priority="Urgent")
+
+        with self.freeze_time(add_to_date(date, minutes=135)):
+            ticket.reload()
+            ticket.status = "Resolved"
+            ticket.save()
+            ticket.reload()
+            self.assertEqual(ticket.agreement_status, "Failed")
+            # resolution_failed_by should be 15 minutes (in business hours seconds)
+            self.assertEqual(ticket.resolution_failed_by, 15 * 60)
+
+    def test_reply_via_agent_default_sender(self):
+        """Without `from_email`, sender on the Communication is the session user."""
+        ticket = make_ticket()
+
+        frappe.set_user(agent)
+        try:
+            ticket.reply_via_agent(message="Reply with default sender")
+        finally:
+            frappe.set_user("Administrator")
+
+        comm = frappe.get_last_doc(
+            "Communication",
+            filters={"reference_doctype": "HD Ticket", "reference_name": ticket.name},
+        )
+        self.assertEqual(comm.sender, agent)
+
+    def test_reply_via_agent_with_from_email(self):
+        """When `from_email` is passed, the Communication uses it as sender/email_account."""
+        email_account = frappe.get_doc(
+            {
+                "doctype": "Email Account",
+                "email_account_name": "Helpdesk From Email Test",
+                "email_id": "from-mail@test.com",
+                "domain": "example.com",
+                "smtp_server": "smtp.example.com",
+                "enable_outgoing": 1,
+                "password": "password",
+            }
+        ).insert(ignore_if_duplicate=True, ignore_permissions=True)
+
+        ticket = make_ticket()
+        frappe.set_user(agent)
+        try:
+            ticket.reply_via_agent(
+                message="Reply with switched from email",
+                from_email={
+                    "email_id": email_account.email_id,
+                    "email_account": email_account.name,
+                },
+            )
+        finally:
+            frappe.set_user("Administrator")
+
+        comm = frappe.get_last_doc(
+            "Communication",
+            filters={"reference_doctype": "HD Ticket", "reference_name": ticket.name},
+        )
+        self.assertEqual(comm.sender, email_account.email_id)
+        self.assertEqual(comm.email_account, email_account.name)
+
+    def test_reply_via_agent_with_invalid_from_email_account(self):
+        """If `from_email.email_account` does not exist, reply_via_agent should throw."""
+        ticket = make_ticket()
+
+        frappe.set_user(agent)
+        try:
+            with self.assertRaises(frappe.ValidationError):
+                ticket.reply_via_agent(
+                    message="Reply with bad email account",
+                    from_email={
+                        "email_id": "invalid@test.com",
+                        "email_account": "Invalid Email Account",
+                    },
+                )
+        finally:
+            frappe.set_user("Administrator")
+
+    def tearDown(self):
+        frappe.set_user("Administrator")
+        remove_holidays()
+        frappe.db.set_single_value("HD Settings", "default_ticket_status", "Open")
+        frappe.delete_doc("HD Ticket Status", "New", force=True)
