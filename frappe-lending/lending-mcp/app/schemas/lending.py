@@ -106,18 +106,3 @@ class LoanOutstandingReportRequest(BaseModel):
     branch: str | None = None
     posting_date: str | None = None
 
-
-class DemoSeedRequest(BaseModel):
-    customer_name: str = Field(default="Demo Lending Customer")
-    customer_group: str = Field(default="Commercial")
-    territory: str = Field(default="All Territories")
-    mobile_no: str | None = None
-    email_id: str | None = None
-    company: str | None = None
-    loan_product: str | None = None
-    loan_amount: float = Field(default=10000)
-    rate_of_interest: float | None = None
-    posting_date: str | None = None
-    repayment_method: str | None = Field(default="Repay Over Number of Periods")
-    repayment_periods: int | None = Field(default=12)
-    repayment_start_date: str | None = None

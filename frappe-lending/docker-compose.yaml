@@ -56,7 +56,9 @@ services:
         bench new-site ${SITE_NAME} --no-mariadb-socket --mariadb-root-password ${DB_ROOT_PASSWORD} --admin-password ${ADMIN_PASSWORD} --db-name ${DB_NAME};
       fi;
       /home/frappe/frappe-bench/env/bin/pip install -e /home/frappe/frappe-bench/apps/lending;
-      printf '%s\n' frappe erpnext lending > sites/apps.txt;
+      echo frappe > sites/apps.txt;
+      echo erpnext >> sites/apps.txt;
+      echo lending >> sites/apps.txt;
       bench --site ${SITE_NAME} install-app erpnext || true;
       bench --site ${SITE_NAME} install-app lending || true;
       bench use ${SITE_NAME};

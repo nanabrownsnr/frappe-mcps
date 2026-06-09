@@ -12,7 +12,6 @@ from schemas.lending import (
     CustomerListResponse,
     DashboardOverviewResponse,
     CustomerUpdateRequest,
-    DemoSeedRequest,
     DueDetailsResponse,
     LoanDashboardSummaryResponse,
     LoanCreateRequest,
@@ -429,116 +428,6 @@ async def dashboard_loan_summary(
     except Exception as exc:
         logger.exception("Dashboard loan summary failed")
         raise HTTPException(status_code=400, detail=f"Unable to fetch dashboard loan summary: {exc}") from exc
-
-
-@router.post("/demo/seed-basic", operation_id="demo_seed_basic", summary="Seed a basic lending demo")
-async def seed_basic_demo(
-    payload: DemoSeedRequest,
-    frappe_client: FrappeApiClient = Depends(get_frappe_client),
-):
-    try:
-        companies = await frappe_client.call_method(
-            "lending.mcp_api.list_companies",
-            params={"limit_page_length": 100},
-        )
-        selected_company = payload.company or (companies[0]["name"] if companies else None)
-        if not selected_company:
-            return {
-                "customer": None,
-                "company": None,
-                "loan_product": None,
-                "loan": None,
-                "warnings": [
-                    "No Company records found. Complete ERPNext company setup before seeding demo lending data."
-                ],
-            }
-
-        customer_rows = await frappe_client.list_docs(
-            "Customer",
-            fields=["name", "customer_name"],
-            filters=[["Customer", "customer_name", "=", payload.customer_name]],
-            limit_page_length=1,
-        )
-        if customer_rows:
-            customer = await frappe_client.get_doc("Customer", customer_rows[0]["name"])
-        else:
-            customer = await frappe_client.call_method(
-                "lending.mcp_api.create_customer",
-                params={
-                    "customer_name": payload.customer_name,
-                    "customer_type": "Individual",
-                    "customer_group": payload.customer_group,
-                    "territory": payload.territory,
-                    "mobile_no": payload.mobile_no,
-                    "email_id": payload.email_id,
-                },
-            )
-
-        loan_products = await frappe_client.call_method(
-            "lending.mcp_api.list_loan_products",
-            params={
-                "company": selected_company,
-                "limit_page_length": 100,
-            },
-        )
-        selected_loan_product = payload.loan_product or (loan_products[0]["name"] if loan_products else None)
-
-        loan = None
-        if selected_company and selected_loan_product:
-            existing_loans = await frappe_client.list_docs(
-                "Loan",
-                fields=["name", "applicant", "company", "loan_product", "status"],
-                filters=[
-                    ["Loan", "applicant", "=", customer["name"]],
-                    ["Loan", "company", "=", selected_company],
-                    ["Loan", "loan_product", "=", selected_loan_product],
-                ],
-                limit_page_length=1,
-                order_by="modified desc",
-            )
-            if existing_loans:
-                loan = await frappe_client.get_doc("Loan", existing_loans[0]["name"])
-            else:
-                loan_payload: dict[str, object] = {
-                    "applicant_type": "Customer",
-                    "applicant": customer["name"],
-                    "company": selected_company,
-                    "loan_product": selected_loan_product,
-                    "loan_amount": payload.loan_amount,
-                }
-                if payload.posting_date:
-                    loan_payload["posting_date"] = payload.posting_date
-                effective_rate = payload.rate_of_interest or (
-                    loan_products[0].get("rate_of_interest") if loan_products else None
-                )
-                if effective_rate is not None:
-                    loan_payload["rate_of_interest"] = effective_rate
-                if payload.repayment_method:
-                    loan_payload["repayment_method"] = payload.repayment_method
-                if payload.repayment_periods is not None:
-                    loan_payload["repayment_periods"] = payload.repayment_periods
-                if payload.repayment_start_date:
-                    loan_payload["repayment_start_date"] = payload.repayment_start_date
-                loan = await frappe_client.call_method("lending.mcp_api.create_loan", params=loan_payload)
-
-        return {
-            "customer": customer,
-            "company": selected_company,
-            "loan_product": selected_loan_product,
-            "loan": loan,
-            "warnings": [
-                message
-                for message in [
-                    None if selected_company else "No Company records found; loan seed skipped.",
-                    None if selected_loan_product else "No Loan Product records found; loan seed skipped.",
-                ]
-                if message
-            ],
-        }
-    except Exception as exc:
-        logger.exception("Basic demo seed failed")
-        raise HTTPException(status_code=400, detail=f"Unable to seed basic demo: {exc}") from exc
-
 
 @router.post("/reports/loan-outstanding", operation_id="report_loan_outstanding", summary="Run loan outstanding report")
 async def report_loan_outstanding(
