@@ -10,7 +10,6 @@ from core.platfom_integration_client import PlatformIntegrationClient, get_platf
 from schemas.lending import (
     CustomerCreateRequest,
     CustomerListResponse,
-    DashboardOverviewResponse,
     CustomerUpdateRequest,
     DueDetailsResponse,
     LoanDashboardSummaryResponse,
@@ -290,26 +289,6 @@ async def loan_dashboard_summary(
 
 
 @router.get(
-    "/dashboard/overview",
-    operation_id="dashboard_overview",
-    summary="Get lending overview",
-    response_model=DashboardOverviewResponse,
-)
-async def dashboard_overview(
-    frappe_client: FrappeApiClient = Depends(get_frappe_client),
-):
-    try:
-        overview = await frappe_client.call_method("lending.mcp_api.get_dashboard_overview")
-        return {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "cards": overview.get("cards", {}),
-        }
-    except Exception as exc:
-        logger.exception("Dashboard overview failed")
-        raise HTTPException(status_code=400, detail=f"Unable to fetch dashboard overview: {exc}") from exc
-
-
-@router.get(
     "/dashboard/loan-summary",
     operation_id="dashboard_loan_summary",
     summary="Get dashboard-oriented loan portfolio summary",
@@ -408,11 +387,6 @@ async def dashboard_loan_summary(
             "top_outstanding": top_outstanding,
             "outstanding_totals": outstanding_totals,
             "actions": [
-                {
-                    "label": "Portfolio Overview",
-                    "tool": "dashboard_overview",
-                    "description": "Fetch the canonical portfolio snapshot used by the dashboard.",
-                },
                 {
                     "label": "Outstanding Report",
                     "tool": "report_loan_outstanding",

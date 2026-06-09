@@ -1,65 +1,39 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi_mcp.server import HTTPRequestInfo
 from mcp import types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
-from ui.loan_dashboard_page import render_loan_dashboard_page
-
 APP_RESOURCE_URI = "ui://lending/loan-dashboard.html"
 APP_RESOURCE_NAME = "Lending Loan Dashboard"
-SUMMARY_TOOL_NAME = "dashboard_loan_summary"
-OVERVIEW_TOOL_NAME = "dashboard_overview"
-REFRESH_TOOL_NAME = "dashboard_loan_summary_refresh"
+APP_RESOURCE_MIME = "text/html;profile=mcp-app"
+TOOL_NAMES = {"dashboard_loan_summary"}
 LEGACY_RESOURCE_URI_META_KEY = "ui/resourceUri"
+UI_DIST_PATH = Path(__file__).resolve().parent.parent / "ui-dashboard" / "dist" / "mcp-app.html"
 
 
 def _app_meta(*, visibility: list[str] | None = None) -> dict[str, Any]:
     ui_meta: dict[str, Any] = {"resourceUri": APP_RESOURCE_URI}
     if visibility:
         ui_meta["visibility"] = visibility
-    return {
-        "ui": ui_meta,
-        LEGACY_RESOURCE_URI_META_KEY: APP_RESOURCE_URI,
-    }
+    return {"ui": ui_meta, LEGACY_RESOURCE_URI_META_KEY: APP_RESOURCE_URI}
 
 
 def register_dashboard_mcp_app(mcp) -> None:
     original_tools = list(mcp.tools)
-
-    app_tools: list[types.Tool] = []
+    updated_tools: list[types.Tool] = []
     for tool in original_tools:
-        if tool.name in {SUMMARY_TOOL_NAME, OVERVIEW_TOOL_NAME}:
-            meta = dict(tool.meta or {})
-            ui_meta = dict(meta.get("ui") or {})
-            ui_meta["resourceUri"] = APP_RESOURCE_URI
-            meta["ui"] = ui_meta
-            meta[LEGACY_RESOURCE_URI_META_KEY] = APP_RESOURCE_URI
-            app_tools.append(tool.model_copy(update={"_meta": meta}))
-        else:
-            app_tools.append(tool)
+        if tool.name not in TOOL_NAMES:
+            updated_tools.append(tool)
+            continue
+        meta = dict(tool.meta or {})
+        meta.update(_app_meta(visibility=["model", "app"]))
+        updated_tools.append(tool.model_copy(update={"_meta": meta}))
 
-    app_tools.append(
-        types.Tool(
-            name=REFRESH_TOOL_NAME,
-            title="Refresh loan dashboard",
-            description="Refresh the loan dashboard data for the embedded Lending MCP app.",
-            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
-            annotations=types.ToolAnnotations(
-                title="Refresh loan dashboard",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=False,
-            ),
-            _meta={
-                **_app_meta(visibility=["app"]),
-            },
-        )
-    )
-    mcp.tools = app_tools
+    mcp.tools = updated_tools
 
     @mcp.server.list_tools()
     async def handle_list_tools():
@@ -72,8 +46,8 @@ def register_dashboard_mcp_app(mcp) -> None:
                 name=APP_RESOURCE_NAME,
                 title=APP_RESOURCE_NAME,
                 uri=APP_RESOURCE_URI,
-                description="Interactive loan dashboard view for Lending MCP tools.",
-                mimeType="text/html;profile=mcp-app",
+                description="Interactive Lending dashboard for the loan dashboard summary tool.",
+                mimeType=APP_RESOURCE_MIME,
             )
         ]
 
@@ -81,26 +55,21 @@ def register_dashboard_mcp_app(mcp) -> None:
     async def handle_read_resource(uri):
         if str(uri) != APP_RESOURCE_URI:
             raise ValueError(f"Unknown resource: {uri}")
+        html = UI_DIST_PATH.read_text(encoding="utf-8")
         return [
             ReadResourceContents(
-                content=render_loan_dashboard_page(),
-                mime_type="text/html;profile=mcp-app",
-                meta={
-                    "ui": {
-                        "prefersBorder": True,
-                    }
-                },
+                content=html,
+                mime_type=APP_RESOURCE_MIME,
+                meta={"ui": {"prefersBorder": True}},
             )
         ]
 
     @mcp.server.call_tool()
     async def handle_call_tool(name: str, arguments: dict[str, Any]):
-        if name in {SUMMARY_TOOL_NAME, OVERVIEW_TOOL_NAME, REFRESH_TOOL_NAME}:
-            target_tool_name = SUMMARY_TOOL_NAME if name == REFRESH_TOOL_NAME else name
-            payload = await _invoke_json_tool(mcp, target_tool_name, arguments or {})
-            text = _render_text_summary(payload, target_tool_name)
+        if name in TOOL_NAMES:
+            payload = await _invoke_json_tool(mcp, name, arguments or {})
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=text)],
+                content=[types.TextContent(type="text", text=_render_summary_text(name, payload))],
                 structuredContent=payload,
                 _meta=_app_meta(),
             )
@@ -174,25 +143,12 @@ async def _invoke_json_tool(mcp, tool_name: str, arguments: dict[str, Any]) -> d
     return response.json()
 
 
-def _render_text_summary(payload: dict[str, Any], tool_name: str) -> str:
-    if tool_name == OVERVIEW_TOOL_NAME:
-        cards = payload.get("cards", {})
-        return (
-            "Lending overview: "
-            f"{cards.get('active_loans', 0)} active loans, "
-            f"{cards.get('open_loan_applications', 0)} open applications, "
-            f"{cards.get('closed_loans', 0)} closed loans, "
-            f"{float(cards.get('total_disbursed', 0)):,.2f} total disbursed, "
-            f"{float(cards.get('total_repayment', 0)):,.2f} total repayment."
-        )
-
+def _render_summary_text(tool_name: str, payload: dict[str, Any]) -> str:
     overview_cards = payload.get("overview", {}).get("cards", {})
-    top_outstanding = payload.get("top_outstanding", [])
-    lead = top_outstanding[0] if top_outstanding else {}
+    outstanding_totals = payload.get("outstanding_totals", {})
     return (
         "Loan dashboard summary: "
         f"{overview_cards.get('active_loans', 0)} active loans, "
         f"{float(overview_cards.get('total_disbursed', 0)):,.2f} disbursed, "
-        f"{float(payload.get('outstanding_totals', {}).get('pending_principal_amount', 0)):,.2f} principal outstanding. "
-        f"Top outstanding loan: {lead.get('name', 'n/a')}."
+        f"{float(outstanding_totals.get('pending_principal_amount', 0)):,.2f} principal outstanding."
     )

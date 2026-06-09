@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lending Dashboard</title>
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Lending MCP</p>
+          <h1>Loan Dashboard</h1>
+          <p id="subtitle" class="subtitle">Waiting for dashboard data.</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-summary" class="button button-primary">Refresh Summary</button>
+        </div>
+      </header>
+
+      <div id="error-banner" class="error hidden"></div>
+
+      <section id="hero-cards" class="hero-grid"></section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Top Outstanding Loans</h2>
+            <span id="outstanding-total" class="pill">0 loans</span>
+          </div>
+          <div id="top-outstanding" class="table-shell empty-state">No data yet.</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Recent Loans</h2>
+            <span id="recent-count" class="pill">0 loans</span>
+          </div>
+          <div id="recent-loans" class="table-shell empty-state">No data yet.</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Portfolio Snapshot</h2>
+          <span id="generated-at" class="muted">Not loaded</span>
+        </div>
+        <div id="overview-cards" class="overview-grid"></div>
+      </section>
+    </div>
+  </body>
+  </html>

@@ -151,7 +151,7 @@ services:
       FRAPPE_API_URL: http://backend:8000
       FRAPPE_SITE_NAME: ${SITE_NAME}
     ports:
-      - "${MCP_PORT:-8080}:8080"
+      - "127.0.0.1:${MCP_PORT:-8080}:8080"
 
 volumes:
   db-data:

@@ -4,14 +4,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from fastapi_mcp import FastApiMCP
 
 from api.v1.routers.lending import router as lending_router
 from core.config import settings
 from mcp_apps import register_dashboard_mcp_app
 from system.license_server import license_watcher
-from ui.loan_dashboard_page import render_loan_dashboard_page
 
 
 @asynccontextmanager
@@ -54,8 +52,3 @@ mcp.mount_http(mount_path="/mcp")
 @app.get("/healthz", operation_id="health_check", tags=["internal"])
 async def health_check():
     return {"status": "ok"}
-
-
-@app.get("/app/loan-dashboard", include_in_schema=False, response_class=HTMLResponse)
-async def loan_dashboard_app():
-    return HTMLResponse(render_loan_dashboard_page())

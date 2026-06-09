@@ -40,7 +40,7 @@ services:
       FRAPPE_API_URL: http://frappe:8000
       FRAPPE_SITE_NAME: helpdesk.localhost
     ports:
-      - "${MCP_PORT:-8081}:8080"
+      - "127.0.0.1:${MCP_PORT:-8081}:8080"
 
 volumes:
   mariadb-data:

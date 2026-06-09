@@ -7,6 +7,7 @@ WORKDIR /service
 
 COPY pyproject.toml /service/pyproject.toml
 COPY app /service/app
+COPY ui-dashboard/dist /service/ui-dashboard/dist
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
