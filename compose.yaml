@@ -1,0 +1,5 @@
+name: frappe-mcps
+
+include:
+  - ./frappe-lending/docker-compose.yaml
+  - ./frappe-helpdesk/docker-compose.yaml

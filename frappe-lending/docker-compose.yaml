@@ -137,7 +137,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
 
-  mcp:
+  lending-mcp:
     build:
       context: ./lending-mcp
     depends_on:
