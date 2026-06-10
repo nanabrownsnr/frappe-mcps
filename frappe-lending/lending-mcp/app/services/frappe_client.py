@@ -67,15 +67,11 @@ class FrappeApiClient:
         return payload.get("message", payload)
 
     async def get_count(self, doctype: str, filters: list | dict | None = None) -> int:
-        rows = await self.list_docs(
-            doctype,
-            fields=["count(name) as count"],
-            filters=filters,
-            limit_page_length=1,
-        )
-        if not rows:
-            return 0
-        return int(rows[0].get("count") or 0)
+        payload: dict[str, Any] = {"doctype": doctype}
+        if filters:
+            payload["filters"] = filters
+        result = await self.call_method("frappe.client.get_count", params=payload)
+        return int(result or 0)
 
     async def get_aggregate(self, doctype: str, expression: str, filters: list | dict | None = None) -> float:
         rows = await self.list_docs(

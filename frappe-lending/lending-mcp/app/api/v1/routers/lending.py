@@ -40,9 +40,9 @@ async def create_customer(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        return await frappe_client.call_method(
-            "lending.mcp_api.create_customer",
-            params=payload.model_dump(exclude_none=True),
+        return await frappe_client.create_doc(
+            "Customer",
+            payload.model_dump(exclude_none=True),
         )
     except Exception as exc:
         logger.exception("Customer create failed")
@@ -103,10 +103,13 @@ async def list_companies(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        return await frappe_client.call_method(
-            "lending.mcp_api.list_companies",
-            params={"limit_page_length": limit_page_length},
+        data = await frappe_client.list_docs(
+            "Company",
+            fields=["name", "company_name", "default_currency", "country"],
+            limit_page_length=limit_page_length,
+            order_by="modified desc",
         )
+        return {"data": data}
     except Exception as exc:
         logger.exception("Company list failed")
         raise HTTPException(status_code=400, detail=f"Unable to list companies: {exc}") from exc
@@ -119,13 +122,26 @@ async def list_loan_products(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        return await frappe_client.call_method(
-            "lending.mcp_api.list_loan_products",
-            params={
-                "company": company,
-                "limit_page_length": limit_page_length,
-            },
+        filters: list[list] = []
+        if company:
+            filters.append(["Loan Product", "company", "=", company])
+
+        data = await frappe_client.list_docs(
+            "Loan Product",
+            fields=[
+                "name",
+                "company",
+                "payment_account",
+                "loan_account",
+                "interest_income_account",
+                "penalty_income_account",
+                "rate_of_interest",
+            ],
+            filters=filters or None,
+            limit_page_length=limit_page_length,
+            order_by="modified desc",
         )
+        return {"data": data}
     except Exception as exc:
         logger.exception("Loan product list failed")
         raise HTTPException(status_code=400, detail=f"Unable to list loan products: {exc}") from exc
@@ -149,9 +165,9 @@ async def create_loan(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        return await frappe_client.call_method(
-            "lending.mcp_api.create_loan",
-            params=payload.model_dump(exclude_none=True),
+        return await frappe_client.create_doc(
+            "Loan",
+            payload.model_dump(exclude_none=True),
         )
     except Exception as exc:
         logger.exception("Loan create failed")
@@ -298,7 +314,6 @@ async def dashboard_loan_summary(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        overview_task = frappe_client.call_method("lending.mcp_api.get_dashboard_overview")
         portfolio_loans_task = frappe_client.list_docs(
             "Loan",
             fields=[
@@ -316,14 +331,26 @@ async def dashboard_loan_summary(
             limit_page_length=100,
             order_by="posting_date desc",
         )
+        active_loan_count_task = frappe_client.get_count(
+            "Loan",
+            filters=[["Loan", "status", "in", ACTIVE_LOAN_STATUSES]],
+        )
+        open_loan_applications_task = frappe_client.get_count(
+            "Loan Application",
+        )
+        closed_loan_count_task = frappe_client.get_count(
+            "Loan",
+            filters=[["Loan", "status", "in", ["Closed", "Settled", "Written Off"]]],
+        )
 
-        overview, portfolio_loans = await asyncio.gather(
-            overview_task,
+        portfolio_loans, active_loan_count, open_loan_applications, closed_loan_count = await asyncio.gather(
             portfolio_loans_task,
+            active_loan_count_task,
+            open_loan_applications_task,
+            closed_loan_count_task,
         )
 
         generated_at = datetime.now(UTC).isoformat()
-        cards = overview.get("cards", {})
         outstanding_rows = []
         for row in portfolio_loans:
             principal_base = float(row.get("disbursed_amount") or row.get("loan_amount") or 0)
@@ -343,6 +370,13 @@ async def dashboard_loan_summary(
             "pending_principal_amount": sum(float(row.get("pending_principal_amount") or 0) for row in outstanding_rows),
             "total_amount_paid": sum(float(row.get("total_principal_paid") or 0) for row in outstanding_rows),
             "loan_count": len(outstanding_rows),
+        }
+        cards = {
+            "active_loans": active_loan_count,
+            "open_loan_applications": open_loan_applications,
+            "closed_loans": closed_loan_count,
+            "total_disbursed": sum(float(row.get("disbursed_amount") or row.get("loan_amount") or 0) for row in portfolio_loans),
+            "total_repayment": sum(float(row.get("total_principal_paid") or 0) for row in portfolio_loans),
         }
 
         return {

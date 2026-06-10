@@ -140,14 +140,8 @@ services:
   mcp:
     build:
       context: ./lending-mcp
-    depends_on:
-      backend:
-        condition: service_started
     env_file:
       - .env
-    environment:
-      FRAPPE_API_URL: http://backend:8000
-      FRAPPE_SITE_NAME: ${SITE_NAME}
     ports:
       - "${MCP_PORT:-8080}:8080"
 
