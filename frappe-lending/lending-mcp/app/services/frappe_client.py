@@ -61,6 +61,13 @@ class FrappeApiClient:
         response = await self._request("PUT", f"/api/resource/{doctype}/{name}", json=payload)
         return response.json().get("data", {})
 
+    async def submit_doc(self, doc: dict[str, Any]) -> dict[str, Any]:
+        payload = {"doc": json.dumps(doc)}
+        result = await self.call_method("frappe.client.submit", params=payload)
+        if isinstance(result, dict):
+            return result
+        return {"message": result}
+
     async def call_method(self, method: str, *, params: dict[str, Any] | None = None) -> Any:
         response = await self._request("POST", f"/api/method/{method}", json=params or {})
         payload = response.json()
@@ -124,7 +131,11 @@ class FrappeApiClient:
                 json=json,
             )
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            message = self._extract_error_message(response)
+            raise ValueError(message) from exc
         return response
 
     async def _request_once(
@@ -158,3 +169,31 @@ class FrappeApiClient:
                 )
                 login_response.raise_for_status()
             return await client.request(method, path, params=params, json=json)
+
+    def _extract_error_message(self, response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text or f"HTTP {response.status_code}"
+
+        if isinstance(payload, dict):
+            message = payload.get("exception") or payload.get("exc")
+            if message:
+                return str(message)
+
+            if payload.get("_server_messages"):
+                try:
+                    server_messages = json.loads(payload["_server_messages"])
+                    if server_messages:
+                        return str(server_messages[0])
+                except Exception:
+                    pass
+
+            errors = payload.get("errors")
+            if errors:
+                return str(errors)
+
+            if payload.get("message"):
+                return str(payload["message"])
+
+        return response.text or f"HTTP {response.status_code}"

@@ -7,30 +7,43 @@ from fastapi_mcp.server import HTTPRequestInfo
 from mcp import types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
-APP_RESOURCE_URI = "ui://lending/loan-dashboard.html"
-APP_RESOURCE_NAME = "Lending Loan Dashboard"
-APP_RESOURCE_MIME = "text/html;profile=mcp-app"
-TOOL_NAMES = {"dashboard_loan_summary"}
 LEGACY_RESOURCE_URI_META_KEY = "ui/resourceUri"
+APP_RESOURCE_MIME = "text/html;profile=mcp-app"
 UI_DIST_PATH = Path(__file__).resolve().parent.parent / "ui-dashboard" / "dist" / "mcp-app.html"
 
+TOOL_UI_MAP: dict[str, dict[str, Any]] = {
+    "dashboard_loan_summary": {
+        "resource_uri": "ui://lending/loan-dashboard.html",
+        "resource_name": "Lending Loan Dashboard",
+        "description": "Interactive Lending dashboard for the loan dashboard summary tool.",
+        "text_renderer": "dashboard",
+    },
+    "prepare_new_loan": {
+        "resource_uri": "ui://lending/prepare-new-loan.html",
+        "resource_name": "Prepare New Loan",
+        "description": "Interactive Lending form for preparing a new loan payload.",
+        "text_renderer": "prepare",
+    },
+}
 
-def _app_meta(*, visibility: list[str] | None = None) -> dict[str, Any]:
-    ui_meta: dict[str, Any] = {"resourceUri": APP_RESOURCE_URI}
+
+def _app_meta(resource_uri: str, *, visibility: list[str] | None = None) -> dict[str, Any]:
+    ui_meta: dict[str, Any] = {"resourceUri": resource_uri}
     if visibility:
         ui_meta["visibility"] = visibility
-    return {"ui": ui_meta, LEGACY_RESOURCE_URI_META_KEY: APP_RESOURCE_URI}
+    return {"ui": ui_meta, LEGACY_RESOURCE_URI_META_KEY: resource_uri}
 
 
 def register_dashboard_mcp_app(mcp) -> None:
     original_tools = list(mcp.tools)
     updated_tools: list[types.Tool] = []
     for tool in original_tools:
-        if tool.name not in TOOL_NAMES:
+        config = TOOL_UI_MAP.get(tool.name)
+        if not config:
             updated_tools.append(tool)
             continue
         meta = dict(tool.meta or {})
-        meta.update(_app_meta(visibility=["model", "app"]))
+        meta.update(_app_meta(config["resource_uri"], visibility=["model", "app"]))
         updated_tools.append(tool.model_copy(update={"_meta": meta}))
 
     mcp.tools = updated_tools
@@ -43,17 +56,19 @@ def register_dashboard_mcp_app(mcp) -> None:
     async def handle_list_resources():
         return [
             types.Resource(
-                name=APP_RESOURCE_NAME,
-                title=APP_RESOURCE_NAME,
-                uri=APP_RESOURCE_URI,
-                description="Interactive Lending dashboard for the loan dashboard summary tool.",
+                name=config["resource_name"],
+                title=config["resource_name"],
+                uri=config["resource_uri"],
+                description=config["description"],
                 mimeType=APP_RESOURCE_MIME,
             )
+            for config in TOOL_UI_MAP.values()
         ]
 
     @mcp.server.read_resource()
     async def handle_read_resource(uri):
-        if str(uri) != APP_RESOURCE_URI:
+        resource_uri = str(uri)
+        if resource_uri not in {config["resource_uri"] for config in TOOL_UI_MAP.values()}:
             raise ValueError(f"Unknown resource: {uri}")
         html = UI_DIST_PATH.read_text(encoding="utf-8")
         return [
@@ -66,12 +81,13 @@ def register_dashboard_mcp_app(mcp) -> None:
 
     @mcp.server.call_tool()
     async def handle_call_tool(name: str, arguments: dict[str, Any]):
-        if name in TOOL_NAMES:
+        config = TOOL_UI_MAP.get(name)
+        if config:
             payload = await _invoke_json_tool(mcp, name, arguments or {})
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=_render_summary_text(name, payload))],
+                content=[types.TextContent(type="text", text=_render_text(config["text_renderer"], payload))],
                 structuredContent=payload,
-                _meta=_app_meta(),
+                _meta=_app_meta(config["resource_uri"]),
             )
 
         request_context = None
@@ -143,7 +159,15 @@ async def _invoke_json_tool(mcp, tool_name: str, arguments: dict[str, Any]) -> d
     return response.json()
 
 
-def _render_summary_text(tool_name: str, payload: dict[str, Any]) -> str:
+def _render_text(renderer: str, payload: dict[str, Any]) -> str:
+    if renderer == "prepare":
+        defaults = payload.get("defaults", {})
+        return (
+            "Prepared a new loan form with defaults for "
+            f"{defaults.get('company') or 'the selected company'} "
+            f"and {defaults.get('loan_product') or 'the selected loan product'}."
+        )
+
     overview_cards = payload.get("overview", {}).get("cards", {})
     outstanding_totals = payload.get("outstanding_totals", {})
     return (

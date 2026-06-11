@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from json import JSONDecodeError, loads
 from logging import getLogger
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,10 +13,12 @@ from schemas.lending import (
     CustomerListResponse,
     CustomerUpdateRequest,
     DueDetailsResponse,
+    LoanMutationResponse,
     LoanDashboardSummaryResponse,
     LoanCreateRequest,
     LoanListRequest,
     LoanOutstandingReportRequest,
+    PrepareNewLoanResponse,
     LoanUpdateMetadataRequest,
     RepaymentScheduleQuoteRequest,
 )
@@ -26,6 +29,69 @@ logger = getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["mcp-tools"])
 
 ACTIVE_LOAN_STATUSES = ["Disbursed", "Partially Disbursed", "Active"]
+MONETARY_CARD_KEYS = {
+    "total_disbursed",
+    "total_sanctioned_amount",
+    "total_shortfall_amount",
+    "total_repayment",
+    "total_write_off",
+}
+APPLICANT_TYPES = ["Customer", "Employee"]
+REPAYMENT_METHODS = ["Repay Fixed Amount per Period", "Repay Over Number of Periods"]
+REPAYMENT_FREQUENCIES = ["Monthly", "Daily", "Weekly", "Bi-Weekly", "Quarterly", "One Time"]
+
+
+def _today_timespan_filters(doctype: str) -> list[list]:
+    return [[doctype, "docstatus", "=", "1"], [doctype, "creation", "Timespan", "today"]]
+
+
+def _submitted_status_filters(doctype: str, fieldname: str, operator: str, value) -> list[list]:
+    return [[doctype, "docstatus", "=", "1"], [doctype, fieldname, operator, value]]
+
+
+def _sum_rows(rows: list[dict], fieldname: str) -> float:
+    return sum(float(row.get(fieldname) or 0) for row in rows)
+
+
+def _currency_prefix(currency: str | None) -> str:
+    if currency == "CHF":
+        return "Fr"
+    return currency or ""
+
+
+def _format_card_value(key: str, value: float | int, currency_prefix: str) -> str:
+    if key in MONETARY_CARD_KEYS:
+        amount = f"{float(value or 0):,.2f}"
+        return f"{currency_prefix} {amount}".strip() if currency_prefix else amount
+    return str(int(value or 0))
+
+
+def _card_tone(key: str) -> str:
+    if key in {"new_loans", "active_loans", "open_loan_applications", "new_loan_applications"}:
+        return "accent"
+    if key in {"total_disbursed", "total_sanctioned_amount", "total_repayment"}:
+        return "success"
+    if key == "total_write_off":
+        return "danger"
+    if key in {"applicants_with_unpaid_shortfall", "total_shortfall_amount"}:
+        return "warning"
+    return "default"
+
+
+def _clean_server_error(raw_error: Exception | str) -> str:
+    text = str(raw_error)
+    if not text:
+        return "Unknown error"
+    try:
+        decoded = loads(text)
+        if isinstance(decoded, dict):
+            if decoded.get("message"):
+                return str(decoded["message"])
+            if decoded.get("exception"):
+                return str(decoded["exception"])
+    except (JSONDecodeError, TypeError):
+        pass
+    return text
 
 
 async def get_frappe_client(
@@ -147,6 +213,79 @@ async def list_loan_products(
         raise HTTPException(status_code=400, detail=f"Unable to list loan products: {exc}") from exc
 
 
+@router.get("/loans/prepare", operation_id="prepare_new_loan", summary="Prepare new loan", response_model=PrepareNewLoanResponse)
+async def prepare_new_loan(
+    frappe_client: FrappeApiClient = Depends(get_frappe_client),
+):
+    try:
+        companies = await frappe_client.list_docs(
+            "Company",
+            fields=["name", "company_name", "default_currency", "country"],
+            limit_page_length=50,
+            order_by="modified desc",
+        )
+        default_company = companies[0]["name"] if companies else None
+        customers_task = frappe_client.list_docs(
+            "Customer",
+            fields=["name", "customer_name"],
+            limit_page_length=100,
+            order_by="modified desc",
+        )
+        loan_products_task = frappe_client.list_docs(
+            "Loan Product",
+            fields=["name", "company", "rate_of_interest", "maximum_loan_amount"],
+            filters=[["Loan Product", "company", "=", default_company]] if default_company else None,
+            limit_page_length=100,
+            order_by="modified desc",
+        )
+        customers, loan_products = await asyncio.gather(customers_task, loan_products_task)
+
+        default_product = loan_products[0] if loan_products else {}
+        posting_date = datetime.now(UTC).date().isoformat()
+        defaults = {
+            "applicant_type": "Customer",
+            "applicant": "",
+            "company": default_company,
+            "posting_date": posting_date,
+            "loan_product": default_product.get("name"),
+            "loan_amount": None,
+            "rate_of_interest": default_product.get("rate_of_interest"),
+            "penalty_charges_rate": None,
+            "repayment_frequency": "Monthly",
+            "repayment_method": "Repay Over Number of Periods",
+            "repayment_periods": 12,
+            "repayment_start_date": posting_date,
+            "is_secured_loan": 0,
+            "is_term_loan": 1,
+            "auto_create_disbursement_on_loan_booking": 0,
+        }
+        preview = {
+            "title": "New Loan Preview",
+            "applicant": defaults["applicant"] or "Select applicant",
+            "company": defaults["company"] or "Select company",
+            "loan_product": defaults["loan_product"] or "Select loan product",
+            "posting_date": defaults["posting_date"],
+        }
+        return {
+            "view": "prepare_new_loan",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "defaults": defaults,
+            "options": {
+                "applicant_types": APPLICANT_TYPES,
+                "repayment_methods": REPAYMENT_METHODS,
+                "repayment_frequencies": REPAYMENT_FREQUENCIES,
+                "companies": companies,
+                "customers": customers,
+                "loan_products": loan_products,
+            },
+            "preview": preview,
+            "warnings": [],
+        }
+    except Exception as exc:
+        logger.exception("Prepare new loan failed")
+        raise HTTPException(status_code=400, detail=f"Unable to prepare new loan: {exc}") from exc
+
+
 @router.get("/loans/{loan_name}", operation_id="loan_get", summary="Get loan")
 async def get_loan(
     loan_name: str,
@@ -159,19 +298,98 @@ async def get_loan(
         raise HTTPException(status_code=404, detail=f"Unable to fetch loan: {exc}") from exc
 
 
-@router.post("/loans", operation_id="loan_create", summary="Create draft loan")
+@router.post("/loans", operation_id="create_loan", summary="Create and submit loan", response_model=LoanMutationResponse)
 async def create_loan(
     payload: LoanCreateRequest,
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
-        return await frappe_client.create_doc(
+        created_loan = await frappe_client.create_doc(
             "Loan",
             payload.model_dump(exclude_none=True),
         )
     except Exception as exc:
         logger.exception("Loan create failed")
         raise HTTPException(status_code=400, detail=f"Unable to create loan: {exc}") from exc
+
+    try:
+        submitted_loan = await frappe_client.submit_doc(created_loan)
+        return {
+            "success": True,
+            "submitted": True,
+            "created_draft": False,
+            "loan_name": submitted_loan.get("name") or created_loan.get("name"),
+            "message": "Loan created and submitted successfully.",
+            "loan": submitted_loan,
+        }
+    except Exception as exc:
+        logger.exception("Loan submit after create failed")
+        draft_loan = created_loan
+        loan_name = created_loan.get("name")
+        if loan_name:
+            try:
+                draft_loan = await frappe_client.get_doc("Loan", loan_name)
+            except Exception:
+                logger.warning("Unable to refresh draft loan after submit failure", exc_info=True)
+        return {
+            "success": False,
+            "submitted": False,
+            "created_draft": True,
+            "loan_name": loan_name,
+            "message": "Loan draft created, but submission failed.",
+            "error": _clean_server_error(exc),
+            "loan": draft_loan,
+        }
+
+
+@router.post("/loans/{loan_name}/submit", operation_id="submit_loan", summary="Submit draft loan", response_model=LoanMutationResponse)
+async def submit_loan(
+    loan_name: str,
+    frappe_client: FrappeApiClient = Depends(get_frappe_client),
+):
+    try:
+        loan_doc = await frappe_client.get_doc("Loan", loan_name)
+    except Exception as exc:
+        logger.exception("Loan fetch before submit failed")
+        raise HTTPException(status_code=404, detail=f"Unable to fetch loan for submission: {exc}") from exc
+
+    if int(loan_doc.get("docstatus") or 0) == 1:
+        return {
+            "success": True,
+            "submitted": True,
+            "created_draft": False,
+            "already_submitted": True,
+            "loan_name": loan_name,
+            "message": "Loan is already submitted.",
+            "loan": loan_doc,
+        }
+
+    try:
+        submitted_loan = await frappe_client.submit_doc(loan_doc)
+        return {
+            "success": True,
+            "submitted": True,
+            "created_draft": False,
+            "loan_name": submitted_loan.get("name") or loan_name,
+            "message": "Loan submitted successfully.",
+            "loan": submitted_loan,
+        }
+    except Exception as exc:
+        logger.exception("Loan submit failed")
+        refreshed_loan = loan_doc
+        try:
+            refreshed_loan = await frappe_client.get_doc("Loan", loan_name)
+        except Exception:
+            logger.warning("Unable to refresh loan after submit failure", exc_info=True)
+        return {
+            "success": False,
+            "submitted": False,
+            "created_draft": True,
+            "loan_name": loan_name,
+            "message": "Loan submission failed.",
+            "error": _clean_server_error(exc),
+            "loan": refreshed_loan,
+        }
 
 
 @router.get("/loans", operation_id="loan_list", summary="List loans")
@@ -314,6 +532,12 @@ async def dashboard_loan_summary(
     frappe_client: FrappeApiClient = Depends(get_frappe_client),
 ):
     try:
+        companies_task = frappe_client.list_docs(
+            "Company",
+            fields=["default_currency"],
+            limit_page_length=1,
+            order_by="modified desc",
+        )
         portfolio_loans_task = frappe_client.list_docs(
             "Loan",
             fields=[
@@ -327,30 +551,113 @@ async def dashboard_loan_summary(
                 "days_past_due",
                 "posting_date",
             ],
-            filters=[["Loan", "status", "in", ACTIVE_LOAN_STATUSES]],
-            limit_page_length=100,
+            filters=[["Loan", "docstatus", "=", "1"], ["Loan", "status", "in", ACTIVE_LOAN_STATUSES]],
+            limit_page_length=200,
             order_by="posting_date desc",
         )
+        new_loans_task = frappe_client.get_count("Loan", filters=_today_timespan_filters("Loan"))
         active_loan_count_task = frappe_client.get_count(
             "Loan",
-            filters=[["Loan", "status", "in", ACTIVE_LOAN_STATUSES]],
+            filters=[["Loan", "docstatus", "=", "1"], ["Loan", "status", "in", ACTIVE_LOAN_STATUSES]],
         )
         open_loan_applications_task = frappe_client.get_count(
             "Loan Application",
+            filters=_submitted_status_filters("Loan Application", "status", "=", "Open"),
+        )
+        new_loan_applications_task = frappe_client.get_count(
+            "Loan Application",
+            filters=_today_timespan_filters("Loan Application"),
         )
         closed_loan_count_task = frappe_client.get_count(
             "Loan",
-            filters=[["Loan", "status", "in", ["Closed", "Settled", "Written Off"]]],
+            filters=_submitted_status_filters("Loan", "status", "=", "Closed"),
+        )
+        active_securities_task = frappe_client.get_count(
+            "Loan Security",
+            filters=[["Loan Security", "disabled", "=", 0]],
+        )
+        sanctioned_loans_task = frappe_client.list_docs(
+            "Loan",
+            fields=["loan_amount"],
+            filters=_submitted_status_filters("Loan", "status", "=", "Sanctioned"),
+            limit_page_length=1000,
+            order_by="modified desc",
+        )
+        disbursements_task = frappe_client.list_docs(
+            "Loan Disbursement",
+            fields=["disbursed_amount"],
+            filters=[["Loan Disbursement", "docstatus", "=", "1"]],
+            limit_page_length=1000,
+            order_by="modified desc",
+        )
+        repayments_task = frappe_client.list_docs(
+            "Loan Repayment",
+            fields=["amount_paid"],
+            filters=[["Loan Repayment", "docstatus", "=", "1"]],
+            limit_page_length=1000,
+            order_by="modified desc",
+        )
+        write_offs_task = frappe_client.list_docs(
+            "Loan Write Off",
+            fields=["write_off_amount"],
+            filters=[["Loan Write Off", "docstatus", "=", "1"]],
+            limit_page_length=1000,
+            order_by="modified desc",
+        )
+        shortfalls_task = frappe_client.list_docs(
+            "Loan Security Shortfall",
+            fields=["loan", "shortfall_amount", "status"],
+            filters=[["Loan Security Shortfall", "status", "=", "Pending"]],
+            limit_page_length=1000,
+            order_by="modified desc",
         )
 
-        portfolio_loans, active_loan_count, open_loan_applications, closed_loan_count = await asyncio.gather(
+        (
+            companies,
+            portfolio_loans,
+            new_loans,
+            active_loan_count,
+            open_loan_applications,
+            new_loan_applications,
+            closed_loan_count,
+            active_securities,
+            sanctioned_loans,
+            disbursements,
+            repayments,
+            write_offs,
+            shortfalls,
+        ) = await asyncio.gather(
+            companies_task,
             portfolio_loans_task,
+            new_loans_task,
             active_loan_count_task,
             open_loan_applications_task,
+            new_loan_applications_task,
             closed_loan_count_task,
+            active_securities_task,
+            sanctioned_loans_task,
+            disbursements_task,
+            repayments_task,
+            write_offs_task,
+            shortfalls_task,
+        )
+
+        shortfall_loan_names = sorted({row.get("loan") for row in shortfalls if row.get("loan")})
+        shortfall_loans = (
+            await frappe_client.list_docs(
+                "Loan",
+                fields=["name", "applicant"],
+                filters=[["Loan", "name", "in", shortfall_loan_names]],
+                limit_page_length=max(len(shortfall_loan_names), 1),
+                order_by="modified desc",
+            )
+            if shortfall_loan_names
+            else []
         )
 
         generated_at = datetime.now(UTC).isoformat()
+        currency_prefix = _currency_prefix((companies[0].get("default_currency") if companies else None))
+
         outstanding_rows = []
         for row in portfolio_loans:
             principal_base = float(row.get("disbursed_amount") or row.get("loan_amount") or 0)
@@ -361,23 +668,49 @@ async def dashboard_loan_summary(
                     "pending_principal_amount": max(principal_base - principal_paid, 0),
                 }
             )
+
         top_outstanding = sorted(
             outstanding_rows,
             key=lambda row: float(row.get("pending_principal_amount") or 0),
             reverse=True,
         )[:5]
+
         outstanding_totals = {
             "pending_principal_amount": sum(float(row.get("pending_principal_amount") or 0) for row in outstanding_rows),
             "total_amount_paid": sum(float(row.get("total_principal_paid") or 0) for row in outstanding_rows),
             "loan_count": len(outstanding_rows),
         }
+
+        applicants_with_unpaid_shortfall = len({row.get("applicant") for row in shortfall_loans if row.get("applicant")})
         cards = {
+            "new_loans": new_loans,
             "active_loans": active_loan_count,
-            "open_loan_applications": open_loan_applications,
             "closed_loans": closed_loan_count,
-            "total_disbursed": sum(float(row.get("disbursed_amount") or row.get("loan_amount") or 0) for row in portfolio_loans),
-            "total_repayment": sum(float(row.get("total_principal_paid") or 0) for row in portfolio_loans),
+            "total_disbursed": _sum_rows(disbursements, "disbursed_amount"),
+            "open_loan_applications": open_loan_applications,
+            "new_loan_applications": new_loan_applications,
+            "total_sanctioned_amount": _sum_rows(sanctioned_loans, "loan_amount"),
+            "active_securities": active_securities,
+            "applicants_with_unpaid_shortfall": applicants_with_unpaid_shortfall,
+            "total_shortfall_amount": _sum_rows(shortfalls, "shortfall_amount"),
+            "total_repayment": _sum_rows(repayments, "amount_paid"),
+            "total_write_off": _sum_rows(write_offs, "write_off_amount"),
         }
+
+        hero_card_definitions = [
+            ("new_loans", "New Loans"),
+            ("active_loans", "Active Loans"),
+            ("closed_loans", "Closed Loans"),
+            ("total_disbursed", "Total Disbursed"),
+            ("open_loan_applications", "Open Loan Applications"),
+            ("new_loan_applications", "New Loan Applications"),
+            ("total_sanctioned_amount", "Total Sanctioned Amount"),
+            ("active_securities", "Active Securities"),
+            ("applicants_with_unpaid_shortfall", "Applicants With Unpaid Shortfall"),
+            ("total_shortfall_amount", "Total Shortfall Amount"),
+            ("total_repayment", "Total Repayment"),
+            ("total_write_off", "Total Write Off"),
+        ]
 
         return {
             "generated_at": generated_at,
@@ -387,35 +720,12 @@ async def dashboard_loan_summary(
             },
             "hero_cards": [
                 {
-                    "key": "active_loans",
-                    "label": "Active Loans",
-                    "value": str(cards.get("active_loans", 0)),
-                    "tone": "accent",
-                },
-                {
-                    "key": "open_loan_applications",
-                    "label": "Open Applications",
-                    "value": str(cards.get("open_loan_applications", 0)),
-                    "tone": "default",
-                },
-                {
-                    "key": "closed_loans",
-                    "label": "Closed Loans",
-                    "value": str(cards.get("closed_loans", 0)),
-                    "tone": "default",
-                },
-                {
-                    "key": "total_disbursed",
-                    "label": "Total Disbursed",
-                    "value": f"{float(cards.get('total_disbursed', 0)):,.2f}",
-                    "tone": "success",
-                },
-                {
-                    "key": "total_repayment",
-                    "label": "Total Repayment",
-                    "value": f"{float(cards.get('total_repayment', 0)):,.2f}",
-                    "tone": "warning",
-                },
+                    "key": key,
+                    "label": label,
+                    "value": _format_card_value(key, cards.get(key, 0), currency_prefix),
+                    "tone": _card_tone(key),
+                }
+                for key, label in hero_card_definitions
             ],
             "recent_loans": portfolio_loans[:5],
             "top_outstanding": top_outstanding,

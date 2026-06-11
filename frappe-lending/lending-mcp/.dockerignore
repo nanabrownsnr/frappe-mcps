@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+
+ui-dashboard/node_modules/
+ui-dashboard/dist/
+ui-dashboard/.vite-temp/

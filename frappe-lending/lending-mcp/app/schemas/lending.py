@@ -30,9 +30,34 @@ class LoanCreateRequest(BaseModel):
     posting_date: str | None = None
     loan_amount: float | None = None
     rate_of_interest: float | None = None
+    penalty_charges_rate: float | None = None
+    repayment_frequency: str | None = None
     repayment_method: str | None = None
     repayment_periods: int | None = None
     repayment_start_date: str | None = None
+    is_secured_loan: int | None = None
+    is_term_loan: int | None = None
+    auto_create_disbursement_on_loan_booking: int | None = None
+
+
+class PrepareNewLoanResponse(BaseModel):
+    view: str
+    generated_at: str
+    defaults: dict
+    options: dict
+    preview: dict
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LoanMutationResponse(BaseModel):
+    success: bool
+    submitted: bool
+    created_draft: bool = False
+    already_submitted: bool = False
+    loan_name: str | None = None
+    message: str
+    error: str | None = None
+    loan: dict | None = None
 
 
 class LoanListRequest(BaseModel):
@@ -65,11 +90,18 @@ class DueDetailsResponse(BaseModel):
 
 
 class DashboardOverviewCards(BaseModel):
+    new_loans: int
     active_loans: int
     open_loan_applications: int
+    new_loan_applications: int
     closed_loans: int
     total_disbursed: float
+    total_sanctioned_amount: float
+    active_securities: int
+    applicants_with_unpaid_shortfall: int
+    total_shortfall_amount: float
     total_repayment: float
+    total_write_off: float
 
 
 class DashboardOverviewResponse(BaseModel):
@@ -105,4 +137,3 @@ class LoanOutstandingReportRequest(BaseModel):
     applicant: str | None = None
     branch: str | None = None
     posting_date: str | None = None
-

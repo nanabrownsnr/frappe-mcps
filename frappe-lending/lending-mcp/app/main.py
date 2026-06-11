@@ -33,7 +33,8 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Mcp-Session-Id", "mcp-session-id"],
+    expose_headers=["Mcp-Session-Id", "mcp-session-id"],
 )
 
 app.include_router(lending_router)

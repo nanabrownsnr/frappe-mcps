@@ -13,46 +13,118 @@
           <div class="brand-row">
             <img id="brand-logo" class="brand-logo" alt="World Business Lenders" />
             <div>
-              <p class="eyebrow">Lending MCP</p>
-              <h1>Loan Dashboard</h1>
+              <h1 id="page-title">Loan Dashboard</h1>
             </div>
           </div>
           <p id="subtitle" class="subtitle">Waiting for dashboard data.</p>
         </div>
         <div class="header-actions">
-          <button id="refresh-summary" class="button button-primary">Refresh Summary</button>
+          <button id="primary-action" class="button">Update Dashboard</button>
         </div>
       </header>
 
       <div id="error-banner" class="error hidden"></div>
+      <div id="status-banner" class="status hidden"></div>
 
-      <section id="hero-cards" class="hero-grid"></section>
-
-      <section class="panel-grid">
-        <article class="panel">
-          <div class="panel-header">
-            <h2>Top Outstanding Loans</h2>
-            <span id="outstanding-total" class="pill">0 loans</span>
-          </div>
-          <div id="top-outstanding" class="table-shell empty-state">No data yet.</div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-header">
-            <h2>Recent Loans</h2>
-            <span id="recent-count" class="pill">0 loans</span>
-          </div>
-          <div id="recent-loans" class="table-shell empty-state">No data yet.</div>
-        </article>
+      <section id="dashboard-view" class="view">
+        <section id="hero-cards" class="hero-grid"></section>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Portfolio Snapshot</h2>
-          <span id="generated-at" class="muted">Not loaded</span>
+      <section id="prepare-view" class="view hidden">
+        <div class="form-layout">
+          <section class="form-section">
+            <h2>Applicant Details</h2>
+            <div class="field-grid">
+              <label class="field">
+                <span>Applicant Type</span>
+                <select id="field-applicant-type"></select>
+              </label>
+              <label class="field">
+                <span>Company</span>
+                <select id="field-company"></select>
+              </label>
+              <label class="field">
+                <span>Applicant</span>
+                <select id="field-applicant"></select>
+              </label>
+              <label class="field">
+                <span>Posting Date</span>
+                <input id="field-posting-date" type="date" />
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <h2>Loan Details</h2>
+            <div class="field-grid">
+              <label class="field">
+                <span>Loan Product</span>
+                <select id="field-loan-product"></select>
+              </label>
+              <label class="field">
+                <span>Rate of Interest (% / Year)</span>
+                <input id="field-rate-of-interest" type="number" min="0" step="0.01" />
+              </label>
+              <label class="field">
+                <span>Loan Amount</span>
+                <input id="field-loan-amount" type="number" min="0" step="0.01" />
+              </label>
+              <label class="field">
+                <span>Penalty Charges Rate</span>
+                <input id="field-penalty-charges-rate" type="number" min="0" step="0.01" />
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <h2>Repayment Details</h2>
+            <div class="field-grid">
+              <label class="field">
+                <span>Repayment Method</span>
+                <select id="field-repayment-method"></select>
+              </label>
+              <label class="field">
+                <span>Repayment Frequency</span>
+                <select id="field-repayment-frequency"></select>
+              </label>
+              <label class="field">
+                <span>Repayment Periods</span>
+                <input id="field-repayment-periods" type="number" min="1" step="1" />
+              </label>
+              <label class="field">
+                <span>Repayment Start Date</span>
+                <input id="field-repayment-start-date" type="date" />
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <h2>Booking Options</h2>
+            <div class="checkbox-grid">
+              <label class="check-field">
+                <input id="field-is-term-loan" type="checkbox" />
+                <span>Is Term Loan</span>
+              </label>
+              <label class="check-field">
+                <input id="field-is-secured-loan" type="checkbox" />
+                <span>Is Secured Loan</span>
+              </label>
+              <label class="check-field">
+                <input id="field-auto-disbursement" type="checkbox" />
+                <span>Auto create disbursement on loan booking</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section preview-section">
+            <div class="preview-header">
+              <h2>Preview</h2>
+              <button id="refresh-options" class="button button-secondary" type="button">Reload Options</button>
+            </div>
+            <div id="preview-card" class="preview-card"></div>
+          </section>
         </div>
-        <div id="overview-cards" class="overview-grid"></div>
       </section>
     </div>
   </body>
-  </html>
+</html>

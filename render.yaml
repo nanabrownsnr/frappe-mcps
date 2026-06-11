@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: frappe-lending-mcp
+    runtime: docker
+    rootDir: frappe-lending/lending-mcp
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: APP_TITLE
+        value: "Frappe Lending MCP"
+      - key: VERSION
+        value: "0.1.0"
